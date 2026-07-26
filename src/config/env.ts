@@ -7,6 +7,8 @@ const optionalNonEmptyString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
 const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -31,9 +33,13 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  LLM_PROVIDER: z.enum(["stub", "openai", "anthropic"]).default("stub"),
+  /** stub = tests; openai = OpenAI-compatible API (incl. Maritime LLM proxy). */
+  LLM_PROVIDER: z.enum(["stub", "openai"]).default("stub"),
+  /** Explicit key, or fall back to Maritime-injected OPENAI_API_KEY. */
   LLM_API_KEY: optionalNonEmptyString,
-  LLM_MODEL: z.string().default("claude-haiku-4-5"),
+  /** Explicit base URL, or fall back to OPENAI_BASE_URL, then api.openai.com. */
+  LLM_BASE_URL: z.string().url().default(DEFAULT_OPENAI_BASE_URL),
+  LLM_MODEL: z.string().default("gpt-4o"),
 
   /** Shared secret for POST /conversations/start (header x-start-token). */
   START_CONVERSATION_TOKEN: optionalNonEmptyString,
@@ -45,9 +51,31 @@ export type Env = z.infer<typeof envSchema> & {
 
 let cached: Env | null = null;
 
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 export function loadEnv(overrides: Record<string, string | undefined> = {}): Env {
   const merged = { ...process.env, ...overrides };
-  const parsed = envSchema.parse(merged);
+
+  // Maritime injects OPENAI_BASE_URL + OPENAI_API_KEY for its LLM proxy.
+  const resolvedBaseUrl =
+    firstNonEmpty(merged.LLM_BASE_URL, merged.OPENAI_BASE_URL) ??
+    DEFAULT_OPENAI_BASE_URL;
+  const resolvedApiKey = firstNonEmpty(merged.LLM_API_KEY, merged.OPENAI_API_KEY);
+
+  const parsed = envSchema.parse({
+    ...merged,
+    LLM_BASE_URL: resolvedBaseUrl,
+    LLM_API_KEY: resolvedApiKey,
+  });
   const databasePath = path.resolve(parsed.DATA_DIR, "conversations.db");
   const env: Env = { ...parsed, databasePath };
   cached = env;

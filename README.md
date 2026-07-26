@@ -13,7 +13,7 @@ CLI/HTTP start ──► GoHighLevel SMS ──► law firm
                                          ▼
                        SQLite stores turn → QStash process job
                                          ▼
-                    LLM (Claude Haiku 4.5) drafts reply / detects booking link
+                    LLM (Maritime proxy / OpenAI-compatible) drafts reply / detects booking link
                                          ▼
                  booking link → goal_reached (stop)
                  reply text   → delayed QStash send → GHL SMS
@@ -30,15 +30,15 @@ CLI/HTTP start ──► GoHighLevel SMS ──► law firm
 | GoHighLevel | Send/receive SMS |
 | Upstash QStash | Process, delayed send, 12h expiry |
 | SQLite | Conversation state |
-| Anthropic Claude Haiku 4.5 | Dynamic SMS replies (or stub in tests) |
-| Maritime.sh | Optional production host (public HTTPS + sleep/wake) |
+| Maritime LLM proxy (OpenAI-compatible) | Dynamic SMS replies (or stub in tests) |
+| Maritime.sh | Production host (public HTTPS + sleep/wake + built-in LLM) |
 
 ## Local quick start
 
 ```bash
 npm install
 cp .env.example .env
-# fill GHL_*, QSTASH_*, LLM_API_KEY (Anthropic), PUBLIC_BASE_URL
+# fill GHL_*, QSTASH_*, PUBLIC_BASE_URL (LLM_PROVIDER=stub locally, or openai + key)
 npm run dev
 ```
 
@@ -59,9 +59,9 @@ curl -sS -X POST "$PUBLIC_BASE_URL/conversations/start" \
   -d @config/persona.json
 ```
 
-## Deploy to Maritime (Claude Haiku 4.5)
+## Deploy to Maritime (built-in LLM proxy)
 
-Maritime hosts this Express app. Replies still use the Anthropic API (`LLM_PROVIDER=anthropic`, `LLM_MODEL=claude-haiku-4-5`).
+Maritime hosts this Express app and injects an OpenAI-compatible LLM proxy (`OPENAI_BASE_URL` + `OPENAI_API_KEY`). Set `LLM_PROVIDER=openai` and `LLM_MODEL=gpt-4o`. Do **not** set your own Anthropic key or overwrite the injected OpenAI proxy vars.
 
 1. Ensure the repo has a root `Dockerfile` (committed) and push your branch.
 2. Install/login CLI:
@@ -87,9 +87,8 @@ maritime create secret-shopper \
 PUBLIC_BASE_URL=https://<maritime-public-host>
 PORT=3000
 DATA_DIR=/app/data
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-haiku-4-5
-LLM_API_KEY=<anthropic_api_key>
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o
 START_CONVERSATION_TOKEN=<long_random_secret>
 GHL_PRIVATE_TOKEN=...
 GHL_LOCATION_ID=...
@@ -104,8 +103,10 @@ CONVERSATION_TTL_HOURS=12
 ```
 
 ```bash
-maritime env import secret-shopper ./maritime.env --reload
+maritime env import secret-shopper-app ./maritime.env --reload
 ```
+
+Leave Maritime-injected `OPENAI_API_KEY` and `OPENAI_BASE_URL` alone.
 
 6. Point the GHL Workflow webhook at:
 

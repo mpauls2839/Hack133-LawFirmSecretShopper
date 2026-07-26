@@ -12,8 +12,6 @@ export function createTurnDecider(env: Env): TurnDecider {
   switch (env.LLM_PROVIDER) {
     case "openai":
       return new OpenAiTurnDecider(env);
-    case "anthropic":
-      return new AnthropicTurnDecider(env);
     case "stub":
     default:
       return new StubTurnDecider();
@@ -122,10 +120,13 @@ class OpenAiTurnDecider extends LlmTurnDecider {
     urls: string[],
   ): Promise<TurnDecision> {
     if (!this.env.LLM_API_KEY) {
-      throw new Error("LLM_API_KEY is required when LLM_PROVIDER=openai");
+      throw new Error(
+        "LLM_API_KEY or OPENAI_API_KEY is required when LLM_PROVIDER=openai",
+      );
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const baseUrl = this.env.LLM_BASE_URL.replace(/\/+$/, "");
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.env.LLM_API_KEY}`,
@@ -147,7 +148,7 @@ class OpenAiTurnDecider extends LlmTurnDecider {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`OpenAI request failed (${response.status}): ${text}`);
+      throw new Error(`OpenAI-compatible request failed (${response.status}): ${text}`);
     }
 
     const data = (await response.json()) as {
@@ -155,47 +156,7 @@ class OpenAiTurnDecider extends LlmTurnDecider {
     };
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
-      throw new Error("OpenAI response missing content");
-    }
-    return this.parseDecision(content, urls);
-  }
-}
-
-class AnthropicTurnDecider extends LlmTurnDecider {
-  protected async requestDecision(
-    input: TurnDecisionInput,
-    urls: string[],
-  ): Promise<TurnDecision> {
-    if (!this.env.LLM_API_KEY) {
-      throw new Error("LLM_API_KEY is required when LLM_PROVIDER=anthropic");
-    }
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": this.env.LLM_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.env.LLM_MODEL,
-        max_tokens: 500,
-        temperature: 0.6,
-        messages: [{ role: "user", content: this.buildPrompt(input, urls) }],
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Anthropic request failed (${response.status}): ${text}`);
-    }
-
-    const data = (await response.json()) as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const content = data.content?.find((part) => part.type === "text")?.text;
-    if (!content) {
-      throw new Error("Anthropic response missing text content");
+      throw new Error("OpenAI-compatible response missing content");
     }
     return this.parseDecision(content, urls);
   }
