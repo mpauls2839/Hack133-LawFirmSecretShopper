@@ -5,6 +5,7 @@
  */
 import { config } from '../config.ts';
 import { chatText } from './llm.ts';
+import { improviseAnswer, improvisedSummary, type ImproviseResult } from './improvise.ts';
 import type { Goal } from '../domain/decide.ts';
 import type { Classification, Persona, Target } from '../domain/types.ts';
 
@@ -66,6 +67,80 @@ const TEMPLATES: Record<Goal, (p: Persona) => string> = {
 };
 
 const firstLine = (text: string): string => (text.split(/(?<=[.?!])\s/)[0] ?? text).trim();
+
+/**
+ * Which case fact answers this question. Keyed by the words a business actually uses when
+ * asking, matched against the labels in the persona's `## Case facts` bullets.
+ *
+ * This exists so a direct question gets a specific answer even with no model available.
+ * Replying "unsure about insurance and next steps" to "where did it happen?" is worse than
+ * useless: it reads as a bot and changes how the business treats the rest of the exchange.
+ */
+const FACT_QUESTIONS: Array<[RegExp, string]> = [
+  // Availability is checked before "when", because "when are you available" is a question
+  // about scheduling, not about the date of the accident.
+  [/\b(?:available|availability|when (?:can|could|are) you|what times? (?:work|are you)|free (?:to|for|on))\b/i, 'availability'],
+  [/\b(?:when|what date|which day|how long ago|date of)\b/i, 'when'],
+  [/\b(?:where|location|which (?:street|road|intersection)|what city)\b/i, 'where'],
+  [/\b(?:how did|what happened|describe|tell me (?:what|more)|circumstances)\b/i, 'how'],
+  [/\b(?:other driver|at fault|who hit|their (?:info|insurance|details))\b/i, 'other driver'],
+  // No trailing \b on a stem: "injur\b" cannot match "injured", which is the single most
+  // likely word in an intake question about a car accident.
+  [/\b(?:injur\w*|hurt|pain\w*|sore|symptom\w*)\b/i, 'injuries'],
+  [/\b(?:doctor|hospital|urgent care|treat\w*|seen anyone|medical care|physician)\b/i, 'medical treatment'],
+  [/\b(?:car damage|vehicle|driv\w*|bumper|repair\w*|damage to)\b/i, 'vehicle damage'],
+  [/\b(?:police|report|officer|citation)\b/i, 'police report'],
+  [/\b(?:insur\w*|claim\w*|adjuster|settlement)\b/i, 'insurance status'],
+  [/\b(?:worried|concern\w*|what do you (?:want|need)|looking for|goal)\b/i, 'main concern'],
+];
+
+/**
+ * Parses the `- **Label:** value` bullets from the persona's case facts.
+ *
+ * Bullets wrap across lines in markdown, so continuation lines are folded into the value.
+ * Without that the answer gets cut off mid-sentence, which reads worse than not answering.
+ */
+function parseFacts(caseFacts: string): Map<string, string> {
+  const facts = new Map<string, string>();
+  let currentKey: string | null = null;
+
+  for (const raw of caseFacts.split('\n')) {
+    const bullet = raw.match(/^\s*[-*]\s*\*\*(.+?):?\*\*\s*(.*)$/);
+    if (bullet) {
+      currentKey = bullet[1].trim().toLowerCase();
+      facts.set(currentKey, bullet[2].trim());
+      continue;
+    }
+    // An indented, non-bullet line continues the previous fact.
+    if (currentKey && /^\s+\S/.test(raw) && !/^\s*[-*]/.test(raw)) {
+      facts.set(currentKey, `${facts.get(currentKey)} ${raw.trim()}`.trim());
+      continue;
+    }
+    if (raw.trim() === '') currentKey = null;
+  }
+
+  for (const [k, v] of facts) facts.set(k, v.replace(/\s+/g, ' ').trim());
+  return facts;
+}
+
+/**
+ * Answers from the case facts when possible. Returns null when nothing matches, so the
+ * caller falls back rather than inventing something the persona was never given.
+ */
+export function answerFromFacts(question: string, caseFacts: string): string | null {
+  const facts = parseFacts(caseFacts);
+  if (facts.size === 0) return null;
+
+  const matched: string[] = [];
+  for (const [pattern, key] of FACT_QUESTIONS) {
+    if (!pattern.test(question)) continue;
+    const value = facts.get(key);
+    if (value && !matched.includes(value)) matched.push(value);
+    if (matched.length === 1) break; // one specific per message, never a jumble of two facts
+  }
+  if (matched.length === 0) return null;
+  return trim(matched.join(' ').replace(/\.\s*$/, '') + '.');
+}
 const topic = (p: Persona): string => p.need_tags[0]?.replace(/_/g, ' ') ?? 'my situation';
 
 /**
@@ -86,6 +161,12 @@ export type ComposeInput = {
   /** Oldest first, "them:" / "me:" prefixed. */
   transcript: Array<{ direction: 'in' | 'out'; body: string }>;
   channel: string;
+  /** The message we are replying to, used to answer from case facts. */
+  lastInbound?: string | null;
+  /** Run id, used as the seed so improvised details are stable per run. */
+  runId?: string;
+  /** Details already improvised on this run, so answers never contradict. */
+  improvised?: Record<string, string>;
 };
 
 /** Picks a phrasing this run has not already sent, so we never repeat ourselves verbatim. */
@@ -95,20 +176,48 @@ function pickUnsent(candidates: string[], alreadySent: string[]): string {
   return fresh ?? candidates[candidates.length - 1];
 }
 
-export async function composeReply(input: ComposeInput): Promise<{ body: string; source: string }> {
+export async function composeReply(
+  input: ComposeInput,
+): Promise<{ body: string; source: string; remember?: { key: string; value: string } }> {
   const { persona, goal } = input;
   const outboundSoFar = input.transcript.filter((m) => m.direction === 'out').map((m) => m.body);
+  // A specific answer from the case facts beats any generic template, and works offline.
+  /**
+   * Improvisers are checked before the case facts because their patterns are narrower and
+   * more specific. "Date of birth" contains "date", and "where do you work" contains
+   * "where" — letting the broad fact patterns win first answered both with details of the
+   * car accident.
+   */
+  if (goal === 'answer_question' && input.lastInbound) {
+    const improvised: ImproviseResult | null = improviseAnswer(
+      input.lastInbound,
+      input.runId ?? persona.id,
+      input.improvised ?? {},
+    );
+    if (improvised) {
+      return { body: trim(improvised.answer), source: 'improvised', remember: improvised.remember };
+    }
+  }
+
+  const factAnswer =
+    goal === 'answer_question' && input.lastInbound
+      ? answerFromFacts(input.lastInbound, persona.case_facts ?? '')
+      : null;
   const template =
-    goal === 'escalate_to_human'
+    factAnswer ??
+    (goal === 'escalate_to_human'
       ? pickUnsent(ESCALATION_VARIANTS, outboundSoFar)
-      : pickUnsent([TEMPLATES[goal](persona), ...ESCALATION_VARIANTS.slice(1)], outboundSoFar);
+      : pickUnsent([TEMPLATES[goal](persona), ...ESCALATION_VARIANTS.slice(1)], outboundSoFar));
 
   const system = [
     `You are texting as a prospective customer. Stay in character and never reveal you are an evaluation.`,
     `Name: ${persona.name}. Contact: ${persona.contact.email} / ${persona.contact.phone}.`,
     `Need: ${persona.need}`,
     `Background you may draw on: ${persona.backstory}`,
-    persona.case_facts ? `Case facts — answer questions directly from these and never invent beyond them:\n${persona.case_facts}` : '',
+    persona.case_facts ? `Case facts — answer questions directly from these:\n${persona.case_facts}` : '',
+    improvisedSummary(input.improvised ?? {})
+      ? `Details you have already given and must repeat consistently: ${improvisedSummary(input.improvised ?? {})}`
+      : '',
     `Urgency: ${persona.urgency}. Budget: ${persona.budget}.`,
     persona.behavior_rules.never.length
       ? `Hard rules, never break them: ${persona.behavior_rules.never.join(' ')}`

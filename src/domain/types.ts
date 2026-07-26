@@ -153,6 +153,8 @@ export type Run = {
   promise_window_text: string | null;
   promise_deadline: string | null;
   promise_kept: boolean | null;
+  /** Details invented because the brief did not cover them, kept consistent per run. */
+  improvised_facts: Record<string, string>;
   scorecard: Scorecard | null;
   narrative: string | null;
   closed_at: string | null;

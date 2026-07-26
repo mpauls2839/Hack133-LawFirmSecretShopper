@@ -278,7 +278,18 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
       classification: cls,
       transcript: messages.forRun(run.id).map((m) => ({ direction: m.direction, body: m.body })),
       channel: updated.channel ?? 'sms',
+      lastInbound: event.body,
+      runId: run.id,
+      improvised: run.improvised_facts,
     });
+
+    // Persist anything invented so the same question gets the same answer next time.
+    if (composed.remember) {
+      runs.patch(run.id, {
+        improvised_facts: { ...run.improvised_facts, [composed.remember.key]: composed.remember.value },
+      });
+      logEvent(run.id, 'improvised_detail', { key: composed.remember.key });
+    }
 
     sendQueue.enqueue({ run_id: run.id, kind: 'reply', body: composed.body, delayMs: replyDelayMs() });
     logEvent(run.id, 'reply_composed', { goal: decision.goal, source: composed.source });

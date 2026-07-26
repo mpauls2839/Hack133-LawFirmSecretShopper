@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS runs (
   promise_window_text TEXT,
   promise_deadline    TEXT,
   promise_kept        INTEGER,                       -- NULL unresolved / 0 broken / 1 kept
+  -- Details the persona had to invent because the brief did not cover them. Persisted so
+  -- the same answer is given every time it is asked; contradicting yourself is the tell.
+  improvised_facts_json TEXT NOT NULL DEFAULT '{}',
   scorecard_json      TEXT,
   narrative           TEXT,
   locked_at           TEXT,                          -- single-writer lock (spec improvement #3)

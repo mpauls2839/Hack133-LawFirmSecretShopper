@@ -272,6 +272,7 @@ function hydrateRun(row: any): Run {
     promise_window_text: row.promise_window_text,
     promise_deadline: row.promise_deadline,
     promise_kept: row.promise_kept === null ? null : !!row.promise_kept,
+    improvised_facts: p<Record<string,string>>(row.improvised_facts_json, {}),
     scorecard: p<Scorecard | null>(row.scorecard_json, null),
     narrative: row.narrative,
     closed_at: row.closed_at,
@@ -305,6 +306,7 @@ export type RunPatch = Partial<{
   promise_window_text: string | null;
   promise_deadline: string | null;
   promise_kept: boolean | null;
+  improvised_facts: Record<string, string>;
   scorecard: Scorecard | null;
   narrative: string | null;
   closed_at: string | null;
@@ -313,7 +315,7 @@ export type RunPatch = Partial<{
   qualification_reason: string | null;
 }>;
 
-const RUN_COLUMN: Record<string, string> = { scorecard: 'scorecard_json' };
+const RUN_COLUMN: Record<string, string> = { scorecard: 'scorecard_json', improvised_facts: 'improvised_facts_json' };
 
 function applyPatch(runId: string, patch: RunPatch): void {
   const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
@@ -322,7 +324,7 @@ function applyPatch(runId: string, patch: RunPatch): void {
   const params: Record<string, unknown> = { run_id: runId, updated_at: nowIso() };
   for (const [key, value] of entries) {
     sets.push(`${RUN_COLUMN[key] ?? key} = @${key}`);
-    if (key === 'scorecard') params[key] = value === null ? null : JSON.stringify(value);
+    if (key === 'scorecard' || key === 'improvised_facts') params[key] = value === null ? null : JSON.stringify(value);
     else if (typeof value === 'boolean') params[key] = value ? 1 : 0;
     else params[key] = value;
   }
