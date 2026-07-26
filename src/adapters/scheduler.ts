@@ -20,22 +20,33 @@ export interface SchedulerAdapter {
 }
 
 export class QStashScheduler implements SchedulerAdapter {
-  private readonly client: Client;
-  private readonly receiver: Receiver | null;
+  private client: Client | null = null;
+  private receiver: Receiver | null = null;
+  private receiverInitialized = false;
 
-  constructor(private readonly env: Env) {
-    if (!env.QSTASH_TOKEN) {
+  constructor(private readonly env: Env) {}
+
+  private getClient(): Client {
+    if (!this.env.QSTASH_TOKEN) {
       throw new Error("QSTASH_TOKEN is required");
     }
-    this.client = new Client({ token: env.QSTASH_TOKEN });
-    if (env.QSTASH_CURRENT_SIGNING_KEY && env.QSTASH_NEXT_SIGNING_KEY) {
-      this.receiver = new Receiver({
-        currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
-        nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
-      });
-    } else {
-      this.receiver = null;
+    if (!this.client) {
+      this.client = new Client({ token: this.env.QSTASH_TOKEN });
     }
+    return this.client;
+  }
+
+  private getReceiver(): Receiver | null {
+    if (!this.receiverInitialized) {
+      this.receiverInitialized = true;
+      if (this.env.QSTASH_CURRENT_SIGNING_KEY && this.env.QSTASH_NEXT_SIGNING_KEY) {
+        this.receiver = new Receiver({
+          currentSigningKey: this.env.QSTASH_CURRENT_SIGNING_KEY,
+          nextSigningKey: this.env.QSTASH_NEXT_SIGNING_KEY,
+        });
+      }
+    }
+    return this.receiver;
   }
 
   async schedule(input: ScheduleJobInput): Promise<ScheduleJobResult> {
@@ -47,7 +58,7 @@ export class QStashScheduler implements SchedulerAdapter {
       ...(input.payload ?? {}),
     };
 
-    const result = await this.client.publishJSON({
+    const result = await this.getClient().publishJSON({
       url,
       body,
       delay: input.delaySeconds && input.delaySeconds > 0 ? input.delaySeconds : undefined,
@@ -65,11 +76,12 @@ export class QStashScheduler implements SchedulerAdapter {
     if (!this.env.QSTASH_VALIDATE_SIGNATURE) {
       return true;
     }
-    if (!signature || !this.receiver) {
+    const receiver = this.getReceiver();
+    if (!signature || !receiver) {
       return false;
     }
     try {
-      return await this.receiver.verify({
+      return await receiver.verify({
         signature,
         body,
         url,

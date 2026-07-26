@@ -23,11 +23,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Use /app/data — Maritime mounts its own volume at /data which is often
+# not writable by the image `node` user, which crashes better-sqlite3 on boot.
 ENV NODE_ENV=production \
     PORT=3000 \
-    DATA_DIR=/data
+    DATA_DIR=/app/data
 
-RUN mkdir -p /data && chown -R node:node /data
+RUN mkdir -p /app/data && chown -R node:node /app/data
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules

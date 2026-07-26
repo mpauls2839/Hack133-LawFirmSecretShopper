@@ -86,7 +86,7 @@ maritime create secret-shopper \
 ```bash
 PUBLIC_BASE_URL=https://<maritime-public-host>
 PORT=3000
-DATA_DIR=/data
+DATA_DIR=/app/data
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-haiku-4-5
 LLM_API_KEY=<anthropic_api_key>

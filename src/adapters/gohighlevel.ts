@@ -31,13 +31,17 @@ export class LiveGoHighLevelAdapter implements MessagingAdapter {
   private readonly contactCache = new Map<string, string>();
   private resolvedLocationId: string | null = null;
 
-  constructor(private readonly env: Env) {
-    if (!env.GHL_PRIVATE_TOKEN) {
+  constructor(private readonly env: Env) {}
+
+  private requireToken(): string {
+    if (!this.env.GHL_PRIVATE_TOKEN) {
       throw new Error("GHL_PRIVATE_TOKEN is required");
     }
+    return this.env.GHL_PRIVATE_TOKEN;
   }
 
   async sendSms(input: SendSmsInput): Promise<SendSmsResult> {
+    this.requireToken();
     const contactId = await this.upsertContact(input.to, input.contactName);
     const response = await fetch(`${GHL_API_BASE}/conversations/messages`, {
       method: "POST",
@@ -173,7 +177,7 @@ export class LiveGoHighLevelAdapter implements MessagingAdapter {
 
   private headers(version: string): Record<string, string> {
     return {
-      Authorization: `Bearer ${this.env.GHL_PRIVATE_TOKEN}`,
+      Authorization: `Bearer ${this.requireToken()}`,
       Version: version,
       Accept: "application/json",
       "Content-Type": "application/json",

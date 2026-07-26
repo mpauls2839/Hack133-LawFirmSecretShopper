@@ -7,17 +7,26 @@ import { QStashScheduler } from "./adapters/scheduler.js";
 import { createTurnDecider } from "./agent/provider.js";
 import { ConversationService } from "./services/conversation-service.js";
 
-const env = loadEnv();
-const store = new ConversationStore(env.databasePath);
-const messaging = new LiveGoHighLevelAdapter(env);
-const scheduler = new QStashScheduler(env);
-const decider = createTurnDecider(env);
-const service = new ConversationService(store, messaging, scheduler, decider, env);
+function main(): void {
+  const env = loadEnv();
+  const store = new ConversationStore(env.databasePath);
+  const messaging = new LiveGoHighLevelAdapter(env);
+  const scheduler = new QStashScheduler(env);
+  const decider = createTurnDecider(env);
+  const service = new ConversationService(store, messaging, scheduler, decider, env);
 
-const app = createApp({ env, service, messaging, scheduler });
+  const app = createApp({ env, service, messaging, scheduler });
 
-app.listen(env.PORT, () => {
-  console.log(`Secret shopper event service listening on :${env.PORT}`);
-  console.log(`Public base URL: ${env.PUBLIC_BASE_URL}`);
-  console.log(`Database: ${env.databasePath}`);
-});
+  app.listen(env.PORT, () => {
+    console.log(`Secret shopper event service listening on :${env.PORT}`);
+    console.log(`Public base URL: ${env.PUBLIC_BASE_URL}`);
+    console.log(`Database: ${env.databasePath}`);
+  });
+}
+
+try {
+  main();
+} catch (error) {
+  console.error("Fatal startup error:", error);
+  process.exit(1);
+}
