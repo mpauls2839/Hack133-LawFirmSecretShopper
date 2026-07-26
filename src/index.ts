@@ -129,6 +129,48 @@ app.post('/api/targets', async (req, res) => {
 
 app.get('/api/targets', (_req, res) => res.json({ ok: true, targets: targets.list() }));
 
+/**
+ * Seeds a synthetic target for a human-played run: someone plays the business on a phone
+ * they own, so there is no site to ingest. Services are set to match the persona's need
+ * tags, which makes the run qualified and exercises the full path.
+ *
+ * Still fully gated — the domain must be on the allowlist, so this cannot be used to
+ * point the harness at a real business that has not been named explicitly.
+ */
+app.post('/api/targets/seed', (req, res) => {
+  const phone = String(req.body?.phone ?? '').trim();
+  if (!/^\+\d{8,15}$/.test(phone)) {
+    return res.status(400).json({ ok: false, error: 'phone must be E.164, e.g. +15551234567' });
+  }
+  const domain = String(req.body?.domain ?? 'whitcomb-injury.test').trim().toLowerCase();
+  const timezone = String(req.body?.timezone ?? 'America/New_York');
+
+  const target = targets.upsert({
+    url: `https://${domain}/`,
+    domain,
+    name: String(req.body?.name ?? 'Whitcomb Injury Law'),
+    category: 'law_firm',
+    city: String(req.body?.city ?? 'New York, NY'),
+    timezone,
+    services: Array.isArray(req.body?.services) && req.body.services.length
+      ? req.body.services
+      : ['car_accident', 'personal_injury', 'truck_accident', 'wrongful_death'],
+    stated_hours_text: 'Hours: Monday - Friday 9:00am - 6:00pm',
+    hours: [1, 2, 3, 4, 5].map((day) => ({ day, open: 9 * 60, close: 18 * 60 })),
+    hours_confidence: 'high',
+    claims_247: !!req.body?.claims_247,
+    chat_widget: null,
+    form: null,
+    reachable: true,
+    ingest_notes: ['seeded for a human-played run; not scraped from a site'],
+    phones: [{ number: phone, line_type: 'mobile', sms_capable: true, source: 'seeded' }],
+    emails: [],
+  });
+
+  const gate = checkSendGate(target);
+  res.json({ ok: true, target, send_gate: gate });
+});
+
 // ---------------------------------------------------------------------- runs ---
 
 app.post('/api/runs', async (req, res) => {
