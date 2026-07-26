@@ -5,7 +5,7 @@
  */
 import { config } from '../config.ts';
 import { chatText } from './llm.ts';
-import { improviseAnswer, improvisedSummary, type ImproviseResult } from './improvise.ts';
+import { improviseAll, improvisedSummary, PERSONA_FIELDS } from './improvise.ts';
 import type { Goal } from '../domain/decide.ts';
 import type { Classification, Persona, Target } from '../domain/types.ts';
 
@@ -42,7 +42,10 @@ const GOAL_INSTRUCTION: Record<Goal, string> = {
     'They offered a time or a booking link. Accept the earliest option and confirm plainly. Do not agree to fees or sign anything.',
   ask_cost: 'Ask concretely what talking to them would cost you.',
   answer_question:
-    'They asked you something. Answer it directly and specifically from your case facts, in one or two sentences. Do not ask anything back unless it follows naturally.',
+    'They asked you something. Answer ONLY that, directly and specifically, in one or two short sentences. ' +
+    'Do not ask to speak to a person, do not ask about cost, do not ask for an appointment, do not add any ' +
+    'question of your own. Answering and then immediately asking for something else is what makes an ' +
+    'automated sender obvious.',
   acknowledge_wait:
     'They asked you to hold. Say briefly that you will wait and nothing more. Do not ask a new question.',
   wrap_up: 'Acknowledge their answer briefly and close the conversation politely.',
@@ -61,6 +64,8 @@ const TEMPLATES: Record<Goal, (p: Persona) => string> = {
     `That works for me — please put me down for the earliest time you have. I'll keep it short.`,
   ask_cost: () =>
     `Before I go further: what would talking to you actually cost me? I don't have anything to put down up front.`,
+  // Deliberately just the answer. No request appended: when someone asks you a question,
+  // replying with an answer plus a demand of your own is what a script does.
   answer_question: (p) => `${firstLine(p.need)}`,
   acknowledge_wait: () => `No problem, I'll wait. Thanks.`,
   wrap_up: () => `Understood, thanks for the clear answer. I appreciate you taking the time.`,
@@ -80,7 +85,8 @@ const FACT_QUESTIONS: Array<[RegExp, string]> = [
   // Availability is checked before "when", because "when are you available" is a question
   // about scheduling, not about the date of the accident.
   [/\b(?:available|availability|when (?:can|could|are) you|what times? (?:work|are you)|free (?:to|for|on))\b/i, 'availability'],
-  [/\b(?:when|what date|which day|how long ago|date of)\b/i, 'when'],
+  // "date of" alone also matches "date of birth", which is not the accident date.
+  [/\b(?:when did|when was|what date|which day|how long ago|date of (?:the )?(?:accident|crash|incident|wreck|collision))\b/i, 'when'],
   [/\b(?:where|location|which (?:street|road|intersection)|what city)\b/i, 'where'],
   [/\b(?:how did|what happened|describe|tell me (?:what|more)|circumstances)\b/i, 'how'],
   [/\b(?:other driver|at fault|who hit|their (?:info|insurance|details))\b/i, 'other driver'],
@@ -88,7 +94,7 @@ const FACT_QUESTIONS: Array<[RegExp, string]> = [
   // likely word in an intake question about a car accident.
   [/\b(?:injur\w*|hurt|pain\w*|sore|symptom\w*)\b/i, 'injuries'],
   [/\b(?:doctor|hospital|urgent care|treat\w*|seen anyone|medical care|physician)\b/i, 'medical treatment'],
-  [/\b(?:car damage|vehicle|driv\w*|bumper|repair\w*|damage to)\b/i, 'vehicle damage'],
+  [/\b(?:car damage|damage to (?:your|the) (?:car|vehicle)|driv(?:able|eable)|bumper|totaled|body ?work)\b/i, 'vehicle damage'],
   [/\b(?:police|report|officer|citation)\b/i, 'police report'],
   [/\b(?:insur\w*|claim\w*|adjuster|settlement)\b/i, 'insurance status'],
   [/\b(?:worried|concern\w*|what do you (?:want|need)|looking for|goal)\b/i, 'main concern'],
@@ -131,15 +137,25 @@ export function answerFromFacts(question: string, caseFacts: string): string | n
   const facts = parseFacts(caseFacts);
   if (facts.size === 0) return null;
 
+  /**
+   * Answer everything asked, not just the first match. Intake staff ask in batches —
+   * "when did it happen, were you hurt, and did you see a doctor?" — and answering one of
+   * three forces them to ask again, which irritates a real person and makes the transcript
+   * useless for judging how they actually run intake.
+   */
   const matched: string[] = [];
   for (const [pattern, key] of FACT_QUESTIONS) {
     if (!pattern.test(question)) continue;
     const value = facts.get(key);
     if (value && !matched.includes(value)) matched.push(value);
-    if (matched.length === 1) break; // one specific per message, never a jumble of two facts
   }
   if (matched.length === 0) return null;
-  return trim(matched.join(' ').replace(/\.\s*$/, '') + '.');
+
+  const joined = matched
+    .map((m) => m.replace(/\s*\.\s*$/, ''))
+    .join('. ')
+    .concat('.');
+  return trim(joined, 600);
 }
 const topic = (p: Persona): string => p.need_tags[0]?.replace(/_/g, ' ') ?? 'my situation';
 
@@ -178,31 +194,42 @@ function pickUnsent(candidates: string[], alreadySent: string[]): string {
 
 export async function composeReply(
   input: ComposeInput,
-): Promise<{ body: string; source: string; remember?: { key: string; value: string } }> {
+): Promise<{ body: string; source: string; remember?: Array<{ key: string; value: string }> }> {
   const { persona, goal } = input;
   const outboundSoFar = input.transcript.filter((m) => m.direction === 'out').map((m) => m.body);
   // A specific answer from the case facts beats any generic template, and works offline.
   /**
-   * Improvisers are checked before the case facts because their patterns are narrower and
-   * more specific. "Date of birth" contains "date", and "where do you work" contains
-   * "where" — letting the broad fact patterns win first answered both with details of the
-   * car accident.
+   * Answer everything asked, drawing on both sources.
+   *
+   * Improvised details are put first because their patterns are the narrow ones: "date of
+   * birth" contains "date" and "where do you work" contains "where", so letting the broad
+   * fact patterns win answered both with details of the car accident instead.
    */
-  if (goal === 'answer_question' && input.lastInbound) {
-    const improvised: ImproviseResult | null = improviseAnswer(
-      input.lastInbound,
-      input.runId ?? persona.id,
-      input.improvised ?? {},
-    );
-    if (improvised) {
-      return { body: trim(improvised.answer), source: 'improvised', remember: improvised.remember };
-    }
-  }
+  let factAnswer: string | null = null;
+  let remembered: Array<{ key: string; value: string }> = [];
 
-  const factAnswer =
-    goal === 'answer_question' && input.lastInbound
-      ? answerFromFacts(input.lastInbound, persona.case_facts ?? '')
-      : null;
+  if (goal === 'answer_question' && input.lastInbound) {
+    // Name, email and phone are the persona's own and are never invented.
+    const own: string[] = [];
+    for (const [pattern, field] of PERSONA_FIELDS) {
+      if (!pattern.test(input.lastInbound)) continue;
+      if (field === 'name' && persona.name) own.push(persona.name);
+      if (field === 'email' && persona.contact.email) own.push(`Email: ${persona.contact.email}`);
+      if (field === 'phone' && persona.contact.phone) own.push(`Phone: ${persona.contact.phone}`);
+    }
+    const invented = improviseAll(input.lastInbound, input.runId ?? persona.id, input.improvised ?? {});
+    const fromFacts = answerFromFacts(input.lastInbound, persona.case_facts ?? '');
+    const pieces = [...own, invented?.answer, fromFacts].filter(Boolean) as string[];
+    if (pieces.length > 0) {
+      remembered = invented?.remember ?? [];
+      return {
+        body: trim(pieces.join(' '), input.channel === 'email' ? 900 : 600),
+        source: invented && fromFacts ? 'facts+improvised' : invented ? 'improvised' : 'facts',
+        remember: remembered,
+      };
+    }
+    factAnswer = null;
+  }
   const template =
     factAnswer ??
     (goal === 'escalate_to_human'

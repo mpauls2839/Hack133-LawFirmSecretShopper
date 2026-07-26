@@ -284,11 +284,11 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
     });
 
     // Persist anything invented so the same question gets the same answer next time.
-    if (composed.remember) {
-      runs.patch(run.id, {
-        improvised_facts: { ...run.improvised_facts, [composed.remember.key]: composed.remember.value },
-      });
-      logEvent(run.id, 'improvised_detail', { key: composed.remember.key });
+    if (composed.remember && composed.remember.length > 0) {
+      const merged = { ...run.improvised_facts };
+      for (const { key, value } of composed.remember) merged[key] = value;
+      runs.patch(run.id, { improvised_facts: merged });
+      logEvent(run.id, 'improvised_details', { keys: composed.remember.map((r) => r.key) });
     }
 
     sendQueue.enqueue({ run_id: run.id, kind: 'reply', body: composed.body, delayMs: replyDelayMs() });
