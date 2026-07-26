@@ -33,7 +33,10 @@ const envSchema = z.object({
 
   LLM_PROVIDER: z.enum(["stub", "openai", "anthropic"]).default("stub"),
   LLM_API_KEY: optionalNonEmptyString,
-  LLM_MODEL: z.string().default("gpt-4o-mini"),
+  LLM_MODEL: z.string().default("claude-haiku-4-5"),
+
+  /** Shared secret for POST /conversations/start (header x-start-token). */
+  START_CONVERSATION_TOKEN: optionalNonEmptyString,
 });
 
 export type Env = z.infer<typeof envSchema> & {

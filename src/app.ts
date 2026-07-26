@@ -5,6 +5,7 @@ import type { MessagingAdapter } from "./adapters/messaging.js";
 import type { SchedulerAdapter } from "./adapters/scheduler.js";
 import { createGhlWebhookRouter } from "./routes/ghl-webhook.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { createConversationsRouter } from "./routes/conversations.js";
 
 export interface AppDeps {
   env: Env;
@@ -32,6 +33,7 @@ export function createApp(deps: AppDeps): Express {
 
   app.use(createGhlWebhookRouter(deps));
   app.use(createJobsRouter(deps));
+  app.use(createConversationsRouter(deps));
 
   return app;
 }

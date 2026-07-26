@@ -52,19 +52,34 @@ abstract class LlmTurnDecider implements TurnDecider {
     const history = input.snapshot.messages
       .map((m) => `${m.direction.toUpperCase()}: ${m.body}`)
       .join("\n");
+    const priorOutbound = input.snapshot.messages
+      .filter((m) => m.direction === "outbound")
+      .map((m) => m.body);
 
     return [
       "You are assisting a secret-shopper SMS agent contacting a law firm.",
       "Return ONLY valid JSON with keys:",
       'bookingLinkDetected (boolean), bookingUrl (string|null), replyText (string|null), reasoning (string).',
       "If any URL is a meeting/booking/scheduling link, set bookingLinkDetected=true, bookingUrl to that URL, replyText=null.",
-      "Otherwise write a short SMS reply that stays in persona and nudges toward getting a booking link.",
+      "Otherwise write replyText as a natural SMS from the persona.",
+      "",
+      "Reply rules:",
+      "- Acknowledge something specific from the latest inbound SMS (do not ignore it).",
+      "- 1–2 short SMS sentences max; no essays, no bullet lists, no markdown.",
+      "- Never repeat a prior outbound message verbatim or near-verbatim.",
+      "- Do not restate the full accident story every turn; only add a new detail if asked.",
+      "- Progress the conversation: confirm fit → ask for next step → ask for a booking/scheduling link.",
+      "- If the firm already agreed to help or schedule, ask for a concrete booking link or times.",
+      "- Stay in persona tone; sound like a real prospect texting, not a bot.",
       "",
       `Persona name: ${input.persona.name}`,
       `Persona summary: ${input.persona.summary}`,
       `Problem: ${input.persona.problem}`,
       `Tone: ${input.persona.tone}`,
       `Goals: ${input.persona.goals.join("; ")}`,
+      "",
+      "Prior outbound messages (do not repeat these):",
+      priorOutbound.length ? priorOutbound.map((b, i) => `${i + 1}. ${b}`).join("\n") : "(none)",
       "",
       "Conversation so far:",
       history || "(none)",
@@ -159,7 +174,7 @@ class AnthropicTurnDecider extends LlmTurnDecider {
       body: JSON.stringify({
         model: this.env.LLM_MODEL,
         max_tokens: 500,
-        temperature: 0.3,
+        temperature: 0.6,
         messages: [{ role: "user", content: this.buildPrompt(input, urls) }],
       }),
     });

@@ -597,4 +597,34 @@ describe("HTTP routes", () => {
     expect(second.status).toBe(200);
     expect(second.body.status).toMatch(/completed|skipped|reply_scheduled|goal_reached|no_reply/);
   });
+
+  it("starts a conversation when x-start-token matches", async () => {
+    env = {
+      ...env,
+      START_CONVERSATION_TOKEN: "test-start-token",
+    };
+    service = new ConversationService(store, messaging, scheduler, new StubTurnDecider(), env);
+    const app = createApp({ env, service, messaging, scheduler });
+    const before = messaging.sent.length;
+
+    const res = await request(app)
+      .post("/conversations/start")
+      .set("x-start-token", "test-start-token")
+      .send(makePersonaConfig({ campaignId: "http-start-1" }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.conversationId).toBeTruthy();
+    expect(messaging.sent.length).toBe(before + 1);
+  });
+
+  it("rejects conversation start without token", async () => {
+    env = {
+      ...env,
+      START_CONVERSATION_TOKEN: "test-start-token",
+    };
+    const app = createApp({ env, service, messaging, scheduler });
+    const res = await request(app).post("/conversations/start").send(makePersonaConfig());
+    expect(res.status).toBe(401);
+  });
 });
