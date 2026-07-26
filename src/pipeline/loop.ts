@@ -157,6 +157,23 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
   }
 
   return runs.withLock(runId, async (run) => {
+    /**
+     * Nothing that predates the run may enter it, whichever transport delivered it. A
+     * shared CRM number carries prior history, and treating any of it as a live reply
+     * fabricates a conversation — which is worse than dropping an event, because the
+     * scorecard then grades a business on words it never said to us.
+     */
+    const opened = new Date(run.t0 ?? run.created_at).getTime();
+    const arrived = new Date(event.ts).getTime();
+    if (Number.isFinite(arrived) && Number.isFinite(opened) && arrived < opened) {
+      logEvent(runId, 'inbound_predates_run', {
+        provider_id: event.provider_id,
+        at: event.ts,
+        run_opened: run.t0 ?? run.created_at,
+      });
+      return { handled: false, reason: 'message predates this run; treated as history', run };
+    }
+
     const target = targets.get(run.target_id)!;
     const persona = personas.get(run.persona_id)!;
 

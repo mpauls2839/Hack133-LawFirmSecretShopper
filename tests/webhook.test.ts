@@ -208,3 +208,49 @@ describe('webhook and poller together', () => {
     assert.equal(messages.forRun(run.id).filter((m) => m.direction === 'in').length, 2);
   });
 });
+
+describe('history must never enter a run', () => {
+  test('a message older than the run is refused, whichever path delivered it', async () => {
+    const run = await boundRun('contact-history', 'convo-history');
+    // Give the run a definite opening time so "before" is unambiguous.
+    const t0 = new Date().toISOString();
+    runs.patch(run.id, { t0 });
+
+    const stale = await handleInbound({
+      provider: 'ghl',
+      provider_id: 'aGvueLidSxFhfB83h7KM',
+      from: 'contact-history',
+      to: '+17407614801',
+      body: 'HI i am sending a reply for my claude test',
+      ts: new Date(new Date(t0).getTime() - 2 * 60 * 60_000).toISOString(),
+      run_id: run.id,
+    });
+
+    assert.equal(stale.handled, false, 'a two-hour-old message is history, not a reply');
+    assert.match(stale.reason, /predates/);
+    assert.equal(messages.forRun(run.id).filter((m) => m.direction === 'in').length, 0);
+    assert.equal(runs.get(run.id)!.turns, 0, 'history must not advance the conversation');
+    assert.ok(
+      !['TERMINAL', 'GRADED', 'CLEANED_UP'].includes(runs.get(run.id)!.state),
+      'and must not close the run — replayed history closed a real run in twelve seconds',
+    );
+  });
+
+  test('a message sent after the run opens is accepted normally', async () => {
+    const run = await boundRun('contact-fresh', 'convo-fresh');
+    runs.patch(run.id, { t0: new Date(Date.now() - 60_000).toISOString() });
+
+    const fresh = await handleInbound({
+      provider: 'ghl',
+      provider_id: 'fresh-1',
+      from: 'contact-fresh',
+      to: '+17407614801',
+      body: 'Hi Dana, this is Marcy at the front desk. Was a police report filed?',
+      ts: new Date().toISOString(),
+      run_id: run.id,
+    });
+
+    assert.equal(fresh.handled, true);
+    assert.equal(runs.get(run.id)!.turns, 1);
+  });
+});

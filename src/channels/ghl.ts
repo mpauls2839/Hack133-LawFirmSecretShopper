@@ -189,14 +189,38 @@ export const ghlAdapter: ChannelAdapter = {
           });
           if (!res.ok) continue;
           const list: Json[] = res.body?.messages?.messages ?? res.body?.messages ?? [];
+          /**
+           * Hard floor on message age. A shared CRM number carries unrelated history, and
+           * the conversation a run binds to may already contain prior traffic — including
+           * our own earlier runs. Anything dated before this run opened is history.
+           *
+           * This must be a timestamp comparison, not the seen-set: that set is
+           * process-local, so priming it in one process does nothing for another and a
+           * router restart empties it. Either case replays old messages as live replies,
+           * which fabricates an entire conversation and drove a real run to a terminal
+           * state in twelve seconds with no one having texted.
+           */
+          const floor = new Date(run.t0 ?? run.created_at).getTime();
+
           // Oldest first so a burst of replies is delivered in order.
           for (const m of [...list].reverse()) {
             const id = m.id ?? m.messageId;
             const inbound = m.direction === 'inbound';
             if (!id || !inbound || seen.has(id)) continue;
-            seen.add(id);
             const body = String(m.body ?? '').trim();
             if (!body) continue;
+
+            const at = new Date(m.dateAdded ?? 0).getTime();
+            if (!Number.isFinite(at) || at < floor) {
+              seen.add(id);
+              logEvent(runId, 'inbound_predates_run', {
+                provider_id: id,
+                at: m.dateAdded ?? null,
+                run_opened: run.t0 ?? run.created_at,
+              });
+              continue;
+            }
+            seen.add(id);
             await sink({
               provider: 'ghl',
               provider_id: id,
