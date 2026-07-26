@@ -36,8 +36,18 @@ const SYSTEM = `You classify one inbound message from a service business replyin
 
 sender_type:
   autoresponder - canned acknowledgement, out-of-office, hours notice, compliance boilerplate. No awareness of what was asked.
-  ai_agent      - conversational automation. Fluent and on-topic but scripted: runs a qualification script, never deviates, no personal detail, no human name.
-  human         - a person. Signs a name, reacts to specifics, apologises for delay, has typos or informal phrasing, or answers something only a person would.
+  ai_agent      - conversational automation. Fluent and on-topic but scripted: runs a qualification script, offers numbered choices, asks for structured input, never deviates, no personal detail, no human name.
+  human         - a person typing on a phone or keyboard.
+
+Weigh these heavily toward human, because generated text almost never contains them:
+  - spelling or typing errors ("thr" for "the", "filled" for "filed", doubled spaces)
+  - missing or inconsistent capitalisation and punctuation
+  - very short, blunt messages ("hi", "ok", "one sec")
+  - hedged or conditional phrasing ("we may be able to", "I think", "probably")
+  - naming a specific colleague, or apologising for a delay
+
+Automation tends to be clean, complete, correctly punctuated and structurally consistent.
+Do not treat a fast reply as proof of automation: people answer texts quickly.
 
 Also report:
   question_answered      - did this message actually answer what the customer last asked?

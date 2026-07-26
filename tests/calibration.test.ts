@@ -8,8 +8,6 @@
  */
 import { test, before, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 
 process.env.JUDGE_DRIVER = process.env.JUDGE_DRIVER ?? 'stub';
 process.env.DB_PATH = ':memory:';
@@ -28,12 +26,10 @@ type Case = {
   flags: Record<string, boolean>;
 };
 
-const fixture = JSON.parse(
-  readFileSync(resolve(import.meta.dirname, 'fixtures/calibration.json'), 'utf8'),
-) as { cases: Case[] };
+const { loadCalibration, runCalibration, CALIBRATION_THRESHOLD } = await import('../src/judge/calibrate.ts');
 
-const CASES = fixture.cases;
-const THRESHOLD = 0.8;
+const CASES = loadCalibration();
+const THRESHOLD = CALIBRATION_THRESHOLD;
 
 before(() => {
   useMemoryDb();

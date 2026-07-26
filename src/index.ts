@@ -15,6 +15,7 @@ import { targets, runs, messages, personas, sendQueue } from './db/repo.ts';
 import { ingestTarget } from './pipeline/intake.ts';
 import { openRun, handleInbound, sweep, useAdapter, checkSendGate, cleanupRun, todayCycle } from './pipeline/loop.ts';
 import { judgeStatus, listModels } from './judge/llm.ts';
+import { runCalibration } from './judge/calibrate.ts';
 import { OUTCOMES } from './domain/states.ts';
 import { ghlAdapter, bindRun, ensureContact, runIdForConversation } from './channels/ghl.ts';
 import { mockAdapter } from './channels/mock.ts';
@@ -63,6 +64,20 @@ app.get('/api/health', (_req, res) => {
  */
 app.get('/api/health/models', async (_req, res) => {
   res.json(await listModels());
+});
+
+/**
+ * Runs the hand-labeled calibration set against whatever judge is live (spec section 6).
+ * The 80% gate is an assertion in the test suite, but it also has to be checkable against
+ * the deployed configuration — the model in production is not the one tests ran with.
+ */
+app.get('/api/health/calibration', async (_req, res) => {
+  try {
+    const result = await runCalibration();
+    res.status(result.passed ? 200 : 503).json({ ok: result.passed, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
 });
 
 // ------------------------------------------------------------------- targets ---
