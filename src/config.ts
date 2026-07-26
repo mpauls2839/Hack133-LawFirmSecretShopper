@@ -87,14 +87,30 @@ export const config = {
   fastClock: bool(process.env.FAST_CLOCK, false),
 } as const;
 
-/** Targets that may receive real traffic. Absent file = nobody. */
+/**
+ * Targets that may receive real traffic. Empty means nobody, which is the safe default:
+ * the allowlist file is deliberately gitignored, so a deployed container starts with no
+ * permitted targets until they are named explicitly.
+ *
+ * Two sources, unioned — a local file for development and TARGET_ALLOWLIST_DOMAINS for
+ * deployment, where there is no file to mount.
+ */
 export function loadAllowlist(): string[] {
-  const path = process.env.TARGET_ALLOWLIST ?? resolve(ROOT, 'config/allowlist.txt');
-  if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .map((l) => l.trim().toLowerCase())
-    .filter((l) => l && !l.startsWith('#'));
+  const domains = new Set<string>();
+
+  for (const entry of str(process.env.TARGET_ALLOWLIST_DOMAINS).split(/[,\s]+/)) {
+    const clean = entry.trim().toLowerCase();
+    if (clean && !clean.startsWith('#')) domains.add(clean);
+  }
+
+  const path = str(process.env.TARGET_ALLOWLIST) || resolve(ROOT, 'config/allowlist.txt');
+  if (existsSync(path)) {
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const clean = line.trim().toLowerCase();
+      if (clean && !clean.startsWith('#')) domains.add(clean);
+    }
+  }
+  return [...domains];
 }
 
 export function replyDelayMs(): number {
