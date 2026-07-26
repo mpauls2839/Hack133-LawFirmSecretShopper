@@ -105,6 +105,7 @@ export async function openRun(targetId: string, opts: { cycle?: string; agentNam
     channel_address: reachability.choice.address,
   });
   sendQueue.enqueue({ run_id: run.id, kind: 'first_contact', body, delayMs: 0 });
+  scheduleSendDrain();
   return { ok: true, run, first_contact: body };
 }
 
@@ -292,6 +293,7 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
     }
 
     sendQueue.enqueue({ run_id: run.id, kind: 'reply', body: composed.body, delayMs: replyDelayMs() });
+    scheduleSendDrain();
     logEvent(run.id, 'reply_composed', { goal: decision.goal, source: composed.source });
 
     return {
@@ -358,6 +360,7 @@ export async function cleanupRun(runId: string): Promise<{ sent: boolean; reason
     body: closingMessage(persona, hadBooking),
     delayMs: 0,
   });
+  scheduleSendDrain();
   runs.patch(runId, { cleanup_state: 'done' });
   logEvent(runId, 'cleanup_queued', { had_booking: hadBooking });
   return { sent: true, reason: hadBooking ? 'cancelling the booking' : 'closing politely' };
@@ -416,19 +419,74 @@ export function elapsed(run: Run, target: Target, fromIso: string): { minutes: n
     : { minutes: rawMinutesBetween(fromIso, nowIso()), basis: 'raw' };
 }
 
+// ------------------------------------------------------------ send scheduling ---
+
+/**
+ * The send queue is drained the instant a message comes due, not on the next sweep tick.
+ *
+ * Every reply is deliberately delayed so the persona reads as a person rather than a bot.
+ * Discovering that delay had expired by polling added a second, accidental delay on top of
+ * it — up to a full sweep interval of dead air that no one chose and nothing measured. The
+ * queue already knows exactly when it wants to fire, so it says so.
+ *
+ * The sweep interval stays as the backstop: a timer lost to a crash or a restart is picked
+ * up on the next pass, so correctness never depends on this.
+ */
+let sendTimer: ReturnType<typeof setTimeout> | null = null;
+let sendTimerFiresAt = Number.POSITIVE_INFINITY;
+
+/** Small margin so the timer never lands a millisecond before `send_after`. */
+const TIMER_MARGIN_MS = 20;
+
+function scheduleSendDrain(): void {
+  const nextIso = sendQueue.nextDueAt();
+  if (!nextIso) return;
+  const firesAt = Date.parse(nextIso) + TIMER_MARGIN_MS;
+
+  // An already-scheduled earlier drain will pick this up; re-arming would only delay it.
+  if (sendTimer && sendTimerFiresAt <= firesAt) return;
+  if (sendTimer) clearTimeout(sendTimer);
+
+  sendTimerFiresAt = firesAt;
+  sendTimer = setTimeout(
+    () => {
+      sendTimer = null;
+      sendTimerFiresAt = Number.POSITIVE_INFINITY;
+      void drainDue().catch((err) => logEvent(null, 'send_drain_error', { error: (err as Error).message }));
+    },
+    Math.max(0, firesAt - Date.now()),
+  );
+  sendTimer.unref?.();
+}
+
+/** Sends everything currently due, then re-arms for whatever is left. */
+export async function drainDue(): Promise<{ sent: number; errors: string[] }> {
+  const out = { sent: 0, errors: [] as string[] };
+  for (const queued of sendQueue.due()) {
+    try {
+      if (await drainOne(queued.id)) out.sent += 1;
+    } catch (err) {
+      out.errors.push(`send ${queued.id}: ${(err as Error).message}`);
+    }
+  }
+  scheduleSendDrain();
+  return out;
+}
+
+export function stopSendScheduler(): void {
+  if (sendTimer) clearTimeout(sendTimer);
+  sendTimer = null;
+  sendTimerFiresAt = Number.POSITIVE_INFINITY;
+}
+
 /** Everything the inbound path cannot see: silence, timeouts, broken promises, cleanup. */
 export async function sweep(): Promise<SweepReport> {
   const report: SweepReport = { sent: 0, nudged: 0, closed: 0, promises_broken: 0, graded: 0, cleaned: 0, errors: [] };
 
   // 1. Drain due outbound.
-  for (const queued of sendQueue.due()) {
-    try {
-      const delivered = await drainOne(queued.id);
-      if (delivered) report.sent += 1;
-    } catch (err) {
-      report.errors.push(`send ${queued.id}: ${(err as Error).message}`);
-    }
-  }
+  const drained = await drainDue();
+  report.sent += drained.sent;
+  report.errors.push(...drained.errors);
 
   // 2. Silence, promises, caps.
   for (const run of runs.inStates(['CONTACTED', 'AWAITING_REPLY', 'IN_CONVERSATION'])) {
@@ -590,6 +648,7 @@ async function sweepRun(runId: string): Promise<SweepAction> {
       channel: run.channel ?? 'sms',
     });
     sendQueue.enqueue({ run_id: run.id, kind: 'nudge', body: composed.body, delayMs: 0 });
+    scheduleSendDrain();
     logEvent(run.id, 'nudge_queued', { silent_minutes: minutes, basis, nudge_number: run.nudges_sent + 1 });
     return 'nudged';
   });

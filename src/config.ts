@@ -78,7 +78,11 @@ export const config = {
 
   // ---- loop timing -------------------------------------------------------
   loop: {
-    maxTurns: int(process.env.MAX_TURNS, 12),
+    /**
+     * Must stay above ESCALATION_FLOOR_INBOUND, or the cap fires before the persona is ever
+     * allowed to ask for a person and the escalation path becomes unreachable.
+     */
+    maxTurns: int(process.env.MAX_TURNS, 16),
     wallClockHours: int(process.env.WALL_CLOCK_HOURS, 72),
     replyDelayMinMs: int(process.env.REPLY_DELAY_MIN_MS, 2 * 60_000),
     replyDelayMaxMs: int(process.env.REPLY_DELAY_MAX_MS, 5 * 60_000),

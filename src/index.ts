@@ -20,6 +20,7 @@ import { OUTCOMES } from './domain/states.ts';
 import { ghlAdapter, bindRun, ensureContact, runForProviderIds, parseGhlWebhook, markSeen, drainForContact } from './channels/ghl.ts';
 import { mockAdapter } from './channels/mock.ts';
 import type { InboundEvent } from './channels/types.ts';
+import type { Run, Target } from './domain/types.ts';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -137,12 +138,61 @@ app.get('/api/targets', (_req, res) => res.json({ ok: true, targets: targets.lis
  * Still fully gated — the domain must be on the allowlist, so this cannot be used to
  * point the harness at a real business that has not been named explicitly.
  */
+/** Base domain a phone-only target hangs off. Kept in one place; must be allowlisted. */
+const DEMO_BASE_DOMAIN = 'whitcomb-injury.test';
+
+/**
+ * Accepts a phone the way a person types it and returns E.164, or null.
+ *
+ * The dashboard is used mid-demo with a handset in the other hand, so "(650) 416-1211" has
+ * to work. Ten digits are assumed North American, which is the only region this harness
+ * sends to today.
+ */
+function toE164(raw: string): string | null {
+  const trimmed = raw.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (trimmed.startsWith('+')) return /^\d{8,15}$/.test(digits) ? `+${digits}` : null;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return null;
+}
+
+/**
+ * A phone-only target gets its own subdomain of the demo domain.
+ *
+ * Runs are unique per (target, cycle). Seeding every phone onto one shared domain means the
+ * second phone collides with the first and cannot start a run at all — the failure looks
+ * like a broken button. The allowlist matches on suffix, so a per-phone subdomain is still
+ * gated by exactly the same entry and nothing is loosened.
+ */
+function demoDomainFor(phone: string, base = DEMO_BASE_DOMAIN): string {
+  return `${phone.replace(/\D/g, '')}.${base}`;
+}
+
+/** Opens a run, binding the CRM contact first on GHL so inbound polling is scoped to it. */
+async function openRunBound(
+  target: Target,
+  cycle?: string,
+): Promise<{ ok: boolean; run: Run; reason: string; error?: string }> {
+  if (adapter.name === 'ghl') {
+    const phone = target.phones[0]?.number;
+    if (!phone) return { ok: false, run: undefined as unknown as Run, reason: '', error: 'target has no phone to bind' };
+    const contact = await ensureContact({ phone, name: persona.name, runId: 'pending' });
+    if ('error' in contact) return { ok: false, run: undefined as unknown as Run, reason: '', error: contact.error };
+    const opened = await openRun(target.id, { cycle });
+    if (opened.ok) bindRun(opened.run.id, { contact_id: contact.contact_id, conversation_id: null });
+    return { ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason };
+  }
+  const opened = await openRun(target.id, { cycle });
+  return { ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason };
+}
+
 app.post('/api/targets/seed', (req, res) => {
-  const phone = String(req.body?.phone ?? '').trim();
-  if (!/^\+\d{8,15}$/.test(phone)) {
+  const phone = toE164(String(req.body?.phone ?? ''));
+  if (!phone) {
     return res.status(400).json({ ok: false, error: 'phone must be E.164, e.g. +15551234567' });
   }
-  const domain = String(req.body?.domain ?? 'whitcomb-injury.test').trim().toLowerCase();
+  const domain = String(req.body?.domain ?? DEMO_BASE_DOMAIN).trim().toLowerCase();
   const timezone = String(req.body?.timezone ?? 'America/New_York');
 
   const target = targets.upsert({
@@ -178,19 +228,53 @@ app.post('/api/runs', async (req, res) => {
   const target = targets.get(targetId);
   if (!target) return res.status(404).json({ ok: false, error: 'target not found' });
 
-  // Bind a CRM contact before the first send so inbound polling is scoped to this run.
-  if (adapter.name === 'ghl') {
-    const phone = target.phones[0]?.number;
-    if (!phone) return res.status(400).json({ ok: false, error: 'target has no phone to bind' });
-    const contact = await ensureContact({ phone, name: persona.name, runId: 'pending' });
-    if ('error' in contact) return res.status(502).json({ ok: false, error: contact.error });
-    const opened = await openRun(targetId, { cycle: req.body?.cycle });
-    if (opened.ok) bindRun(opened.run.id, { contact_id: contact.contact_id, conversation_id: null });
-    return res.json({ ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason });
+  const opened = await openRunBound(target, req.body?.cycle);
+  if (opened.error) return res.status(502).json({ ok: false, error: opened.error });
+  res.json({ ok: opened.ok, run: opened.run, reason: opened.reason });
+});
+
+/**
+ * Phone in, live run out — one call, for the dashboard's start box.
+ *
+ * Seeding a target and opening a run were two requests, which is fine from a script and
+ * wrong from a button: a failure between them leaves a target with no run, and the operator
+ * cannot tell which half broke. This does both or neither, and reports the send gate either
+ * way so a blocked run says why instead of looking dead.
+ */
+app.post('/api/runs/quick', async (req, res) => {
+  const phone = toE164(String(req.body?.phone ?? ''));
+  if (!phone) {
+    return res.status(400).json({ ok: false, error: 'enter a phone number, e.g. +1 650 416 1211' });
   }
 
-  const opened = await openRun(targetId, { cycle: req.body?.cycle });
-  res.json({ ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason });
+  const target = targets.upsert({
+    url: `https://${demoDomainFor(phone)}/`,
+    domain: demoDomainFor(phone),
+    name: String(req.body?.name ?? '').trim() || `Test Firm ${phone.slice(-4)}`,
+    category: 'law_firm',
+    city: String(req.body?.city ?? 'New York, NY'),
+    timezone: String(req.body?.timezone ?? 'America/New_York'),
+    services: ['car_accident', 'personal_injury', 'truck_accident', 'wrongful_death'],
+    stated_hours_text: 'Hours: Monday - Friday 9:00am - 6:00pm',
+    hours: [1, 2, 3, 4, 5].map((day) => ({ day, open: 9 * 60, close: 18 * 60 })),
+    hours_confidence: 'high',
+    claims_247: !!req.body?.claims_247,
+    chat_widget: null,
+    form: null,
+    reachable: true,
+    ingest_notes: ['started from the dashboard by phone number; not scraped from a site'],
+    phones: [{ number: phone, line_type: 'mobile', sms_capable: true, source: 'seeded' }],
+    emails: [],
+  });
+
+  const gate = checkSendGate(target);
+  if (!gate.allowed) {
+    return res.status(403).json({ ok: false, error: `send blocked: ${gate.reason}`, send_gate: gate, target });
+  }
+
+  const opened = await openRunBound(target, req.body?.cycle);
+  if (opened.error) return res.status(502).json({ ok: false, error: opened.error, target });
+  res.json({ ok: opened.ok, run: opened.run, reason: opened.reason, target, send_gate: gate });
 });
 
 app.get('/api/runs', (_req, res) => {

@@ -79,6 +79,16 @@
       td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
       th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
       .empty { padding: 28px 14px; color: var(--dim); text-align: center; }
+      .start { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+      .start input { flex: 1 1 150px; min-width: 0; padding: 9px 10px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--bg); color: inherit; font: 13px/1.2 var(--mono); }
+      .start input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .start button { padding: 9px 14px; border-radius: 6px; border: 1px solid var(--accent);
+        background: var(--accent); color: #fff; font: 600 13px/1.2 inherit; cursor: pointer; }
+      .start button:disabled { opacity: 0.55; cursor: progress; }
+      .note { font-size: 12px; color: var(--dim); margin-bottom: 18px; }
+      .note.bad { color: var(--bad); }
+      .note.good { color: var(--good); }
       code { font: 12px/1.4 var(--mono); color: var(--dim); }
       .scroll { overflow-x: auto; }
     </style>
@@ -94,6 +104,14 @@
 
     <main>
       <section>
+        <h2>Start a run</h2>
+        <form class="start" id="start">
+          <input id="f-phone" type="tel" placeholder="+1 650 416 1211" aria-label="phone number" required />
+          <input id="f-name" type="text" placeholder="business name (optional)" aria-label="business name" />
+          <button type="submit" id="f-go">Text this number</button>
+        </form>
+        <div class="note" id="start-note">The router texts first. Reply from that handset and the persona answers.</div>
+
         <h2>Runs</h2>
         <div class="runs" id="runs"><div class="empty">loading…</div></div>
       </section>
@@ -217,6 +235,43 @@
           <h2 style="padding-left:0;border:0;margin-top:18px">Transcript</h2>
           <div class="transcript">${msgs || '<div class="empty">nothing sent yet</div>'}</div>`;
       }
+
+      const note = (msg, kind = '') => {
+        el('start-note').textContent = msg;
+        el('start-note').className = `note ${kind}`;
+      };
+
+      el('start').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const phone = el('f-phone').value.trim();
+        if (!phone) return;
+        el('f-go').disabled = true;
+        note('opening run and sending first text…');
+        try {
+          const r = await fetch('/api/runs/quick', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ phone, name: el('f-name').value.trim() || undefined }),
+          });
+          const d = await r.json();
+          if (!d.ok) {
+            // Surface the reason verbatim: a blocked send and a duplicate run look identical
+            // from the outside, and guessing which one it was wastes demo time.
+            note(d.error || d.reason || 'could not start the run', 'bad');
+            if (d.run) { selected = d.run.id; }
+          } else {
+            selected = d.run.id;
+            el('f-phone').value = '';
+            el('f-name').value = '';
+            note(`texting ${d.target?.phones?.[0]?.number ?? phone} — reply from that phone`, 'good');
+          }
+          await tick();
+        } catch (err) {
+          note(String(err), 'bad');
+        } finally {
+          el('f-go').disabled = false;
+        }
+      };
 
       async function tick() {
         await loadHealth();

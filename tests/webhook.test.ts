@@ -292,3 +292,62 @@ describe('being asked to hold is not a reason to hang up', () => {
     assert.equal(decide(view, noWait).action, 'terminate');
   });
 });
+
+const { readInbound: readIn } = await import('../src/judge/deterministic.ts');
+const { decide: decideNow } = await import('../src/domain/decide.ts');
+
+/**
+ * The persona is a client, not an escalation bot. It answers what it is asked and lets the
+ * business offer the next step; asking for a person early pre-empts the behaviour under test.
+ */
+describe('patience before asking for a person', () => {
+  const flags = () => ({ ...readIn('Thanks, noted.', []).flags });
+  const bot = (inboundCount: number) => ({
+    view: {
+      turns: inboundCount, inboundCount, machineInbound: inboundCount, humanSeen: false,
+      turnsSinceHuman: 0, priceSeen: false, meetingOffered: false, specialistSeen: false,
+      t0: new Date().toISOString(),
+    },
+    cls: { sender_type: 'autoresponder' as const, flags: flags(), classifier: 'test', reasons: [] },
+  });
+
+  test('never asks for a human below the floor, however many bot replies arrive', () => {
+    for (const n of [1, 2, 3, 5, 9]) {
+      const { view, cls } = bot(n);
+      const d = decideNow(view, cls);
+      assert.equal(d.action, 'reply');
+      assert.notEqual(d.goal, 'escalate_to_human', `escalated at inbound ${n}`);
+      assert.notEqual(d.goal, 'answer_and_seek_human', `sought a human at inbound ${n}`);
+    }
+  });
+
+  test('asks once the floor is reached, so a real bot loop is still a finding', () => {
+    const { view, cls } = bot(10);
+    assert.equal(decideNow(view, cls).goal, 'escalate_to_human');
+  });
+
+  test('a human who asks something gets an answer, never a request for a person', () => {
+    const view = {
+      turns: 4, inboundCount: 4, machineInbound: 0, humanSeen: true, turnsSinceHuman: 1,
+      priceSeen: false, meetingOffered: false, specialistSeen: false, t0: new Date().toISOString(),
+    };
+    const cls = { sender_type: 'human' as const, flags: flags(), classifier: 'test', reasons: [] };
+    assert.equal(decideNow(view, cls, 'What is your date of birth?').goal, 'answer_question');
+    // Below the floor and nothing asked: cooperate, do not chase a specialist.
+    assert.equal(decideNow(view, cls, 'Got it.').goal, 'ask_cost');
+  });
+
+  test('an open question keeps the run alive past the pursuit window', () => {
+    const view = {
+      turns: 5, inboundCount: 5, machineInbound: 0, humanSeen: true, turnsSinceHuman: 3,
+      priceSeen: true, meetingOffered: false, specialistSeen: true, t0: new Date().toISOString(),
+    };
+    const cls = { sender_type: 'human' as const, flags: flags(), classifier: 'test', reasons: [] };
+    // Hanging up on a question grades the business on an exchange we abandoned.
+    const asked = decideNow(view, cls, 'Can you confirm the date and your address?');
+    assert.equal(asked.action, 'reply');
+    assert.equal(asked.goal, 'answer_question');
+    // Same view, nothing asked: settling is correct.
+    assert.equal(decideNow(view, cls, 'Ok.').action, 'terminate');
+  });
+});

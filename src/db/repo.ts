@@ -630,6 +630,19 @@ export const sendQueue = {
       .all(runId) as QueuedSend[];
   },
 
+  /**
+   * When the earliest pending send comes due.
+   *
+   * Lets the drain be scheduled for that exact instant instead of being discovered by the
+   * next sweep tick, which otherwise adds up to a full interval of dead air to every reply.
+   */
+  nextDueAt(): string | null {
+    const row = db()
+      .prepare("SELECT send_after FROM send_queue WHERE state = 'pending' ORDER BY send_after LIMIT 1")
+      .get() as { send_after: string } | undefined;
+    return row?.send_after ?? null;
+  },
+
   markSent(qid: string, providerId: string | null): void {
     db()
       .prepare("UPDATE send_queue SET state = 'sent', sent_at = ?, provider_id = ? WHERE id = ?")

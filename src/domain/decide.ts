@@ -42,6 +42,20 @@ export type Decision = {
 /** Turns spent chasing a human after one appeared before we accept HUMAN_* and stop. */
 const HUMAN_PURSUIT_TURNS = 2;
 
+/**
+ * How many inbound messages the business gets before the persona asks to be put through to
+ * a person.
+ *
+ * A real client with a fresh injury answers what they are asked. They do not demand a
+ * supervisor on the second message — and a persona that does corrupts the measurement,
+ * because a well-run intake desk offers the callback itself once it has the facts. Asking
+ * early pre-empts exactly the behaviour under test and makes every business look the same.
+ *
+ * Below this floor the persona stays a cooperative client: answer, volunteer detail, accept
+ * whatever next step is offered. Above it, silence from a human is a real finding.
+ */
+const ESCALATION_FLOOR_INBOUND = 10;
+
 export function decide(view: RunView, cls: Classification, lastInbound: string | null = null): Decision {
   const f = cls.flags;
 
@@ -110,7 +124,12 @@ export function decide(view: RunView, cls: Classification, lastInbound: string |
       goal: 'acknowledge_wait',
     };
   }
-  if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS && !bookingInPlay) {
+  /**
+   * An unanswered question keeps the run open, for the same reason `asked_to_wait` does:
+   * terminating on a question leaves the business mid-intake and grades them on an exchange
+   * we abandoned. Answer first; settle when they stop asking.
+   */
+  if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS && !bookingInPlay && !askedUsSomething(lastInbound)) {
     const specialist = f.specialist_identified || view.specialistSeen;
     return {
       action: 'terminate',
@@ -159,11 +178,16 @@ function nextGoal(view: RunView, cls: Classification, humanSeen: boolean, lastIn
    */
   if (askedUsSomething(lastInbound)) return 'answer_question';
 
+  // Below the floor the persona never asks for a person; it cooperates and waits to be
+  // offered a next step. See ESCALATION_FLOOR_INBOUND.
+  const mayAskForPerson = view.inboundCount >= ESCALATION_FLOOR_INBOUND;
+
   if (cls.sender_type === 'autoresponder' || cls.sender_type === 'ai_agent') {
+    if (!mayAskForPerson) return 'seek_booking';
     // Two machine replies is enough patience before asking for a person.
     return view.machineInbound >= 2 ? 'escalate_to_human' : 'answer_and_seek_human';
   }
-  if (humanSeen && !view.specialistSeen && !f.specialist_identified) return 'seek_specialist';
+  if (mayAskForPerson && humanSeen && !view.specialistSeen && !f.specialist_identified) return 'seek_specialist';
   if (humanSeen && !view.priceSeen && !f.price_given) return 'ask_cost';
   return 'seek_booking';
 }
