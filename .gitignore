@@ -8,4 +8,3 @@ data/
 .DS_Store
 coverage/
 *.log
-config/persona.json
