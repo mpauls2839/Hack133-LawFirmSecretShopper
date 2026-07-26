@@ -5,7 +5,7 @@
  */
 import { config } from '../config.ts';
 import { chatText } from './llm.ts';
-import { improviseAll, improvisedSummary, PERSONA_FIELDS } from './improvise.ts';
+import { improviseAll, improviseFreeform, improvisedSummary, PERSONA_FIELDS } from './improvise.ts';
 import type { Goal } from '../domain/decide.ts';
 import type { Classification, Persona, Target } from '../domain/types.ts';
 
@@ -64,9 +64,17 @@ const TEMPLATES: Record<Goal, (p: Persona) => string> = {
     `That works for me — please put me down for the earliest time you have. I'll keep it short.`,
   ask_cost: () =>
     `Before I go further: what would talking to you actually cost me? I don't have anything to put down up front.`,
-  // Deliberately just the answer. No request appended: when someone asks you a question,
-  // replying with an answer plus a demand of your own is what a script does.
-  answer_question: (p) => `${firstLine(p.need)}`,
+  /**
+   * Last resort only: reached when the question matched nothing in the case facts and
+   * nothing improvisable.
+   *
+   * It used to restate the opening complaint here. That is the worst available reply —
+   * asked "what time and date", the persona answered "Rear-ended at a stoplight last
+   * week…", which is both non-responsive and unmistakably a script replaying its intro. A
+   * person who did not follow the question says so and offers to fill the gap.
+   */
+  answer_question: () =>
+    `Sorry, not sure which detail you need — tell me which and I'll send it right over.`,
   acknowledge_wait: () => `No problem, I'll wait. Thanks.`,
   wrap_up: () => `Understood, thanks for the clear answer. I appreciate you taking the time.`,
 };
@@ -85,8 +93,20 @@ const FACT_QUESTIONS: Array<[RegExp, string]> = [
   // Availability is checked before "when", because "when are you available" is a question
   // about scheduling, not about the date of the accident.
   [/\b(?:available|availability|when (?:can|could|are) you|what times? (?:work|are you)|free (?:to|for|on))\b/i, 'availability'],
-  // "date of" alone also matches "date of birth", which is not the accident date.
-  [/\b(?:when did|when was|what date|which day|how long ago|date of (?:the )?(?:accident|crash|incident|wreck|collision))\b/i, 'when'],
+  /**
+   * "date of" alone also matches "date of birth", which is not the accident date, so bare
+   * `date` carries a lookahead.
+   *
+   * Intake staff also ask elliptically — "what time and date", "time and date?", "date?" —
+   * and a pattern that insists on a verb ("when did", "what date") misses every one of
+   * them. That failure is not a missing answer: the goal falls through and the persona
+   * replies about something nobody asked, which is the most obviously robotic thing it can
+   * do. `what time` excludes the scheduling sense, which the availability row above owns.
+   */
+  [
+    /\b(?:when did|when was|what time(?!s?\s+(?:work|are|would|suit))|what date|time and date|date and time|which day|how long ago|date\b(?!\s*of\s*birth)|date of (?:the )?(?:accident|crash|incident|wreck|collision))\b/i,
+    'when',
+  ],
   [/\b(?:where|location|which (?:street|road|intersection)|what city)\b/i, 'where'],
   [/\b(?:how did|what happened|describe|tell me (?:what|more)|circumstances)\b/i, 'how'],
   [/\b(?:other driver|at fault|who hit|their (?:info|insurance|details))\b/i, 'other driver'],
@@ -217,15 +237,33 @@ export async function composeReply(
       if (field === 'email' && persona.contact.email) own.push(`Email: ${persona.contact.email}`);
       if (field === 'phone' && persona.contact.phone) own.push(`Phone: ${persona.contact.phone}`);
     }
-    const invented = improviseAll(input.lastInbound, input.runId ?? persona.id, input.improvised ?? {});
+    const known = input.improvised ?? {};
+    const seed = input.runId ?? persona.id;
+    const invented = improviseAll(input.lastInbound, seed, known);
     const fromFacts = answerFromFacts(input.lastInbound, persona.case_facts ?? '');
-    const pieces = [...own, invented?.answer, fromFacts].filter(Boolean) as string[];
+    // Labelled when several details go out together, bare when it is the only thing asked —
+    // "Email: x 8592 Willow Creek Dr" reads like a leak, "Address: …" reads like a form.
+    const inventedText = invented && (own.length > 0 || fromFacts) ? invented.parts.join('. ') : invented?.answer;
+    const pieces = [...own, inventedText, fromFacts].filter(Boolean) as string[];
     if (pieces.length > 0) {
       remembered = invented?.remember ?? [];
       return {
         body: trim(pieces.join(' '), input.channel === 'email' ? 900 : 600),
         source: invented && fromFacts ? 'facts+improvised' : invented ? 'improvised' : 'facts',
         remember: remembered,
+      };
+    }
+
+    /**
+     * Nothing anticipated the question, so answer it anyway rather than stalling the intake.
+     * Kept last so a real fact always wins over an invented one.
+     */
+    const freeform = improviseFreeform(input.lastInbound, seed, known);
+    if (freeform) {
+      return {
+        body: trim(freeform.answer, input.channel === 'email' ? 900 : 600),
+        source: 'improvised',
+        remember: freeform.remember ? [freeform.remember] : [],
       };
     }
     factAnswer = null;

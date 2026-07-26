@@ -212,6 +212,101 @@ const LABELS: Record<string, string> = {
   police_report_number: 'Report number',
 };
 
+/**
+ * Last resort: a question about something nobody anticipated.
+ *
+ * The named improvisers above cover what intake desks usually ask. They cannot cover
+ * everything, and the fallback that admitted as much ("not sure which detail you need") put
+ * the work back on the business and stalled the intake — which is the one thing this harness
+ * must not do, because a stalled intake cannot be graded.
+ *
+ * So an answer is invented. The shape is taken from the interrogative, since a wrong shape
+ * is what gives the game away: "how many" wants a number, "who" wants a person, and
+ * answering either with a sentence about insurance reads as a script. Everything produced is
+ * mundane and unverifiable by design — nothing here names a real person, place or number.
+ *
+ * The answer is keyed by the question's own words and persisted, so the same question asked
+ * three turns later gets the same answer. Contradicting yourself is a clearer tell than any
+ * single implausible detail.
+ */
+const FREEFORM_SHAPES: Array<[RegExp, (seed: string) => string]> = [
+  [/\bhow (?:many|much)\b/i, (s) => pick(['Two.', 'Just one.', 'Three, I think.', 'About four.'], s, 'count')],
+  [
+    /\bhow long\b/i,
+    (s) => pick(['About ten minutes.', 'Maybe half an hour.', 'A couple of days.', 'Around a week.'], s, 'dur'),
+  ],
+  [
+    /\bhow far\b/i,
+    (s) => pick(['A couple of blocks.', 'About two miles.', 'Ten minutes away.', 'Not far, same neighbourhood.'], s, 'dist'),
+  ],
+  [
+    /\bwho\b/i,
+    (s) => pick(['My brother Daniel.', 'A friend, Marcus.', 'My sister Elena.', 'Nobody, I was on my own.'], s, 'who'),
+  ],
+  [
+    /\bwhere\b/i,
+    (s) => pick(['At home.', 'On my way to work.', 'Near the office on Franklin.', 'Just off the main road.'], s, 'where'),
+  ],
+  [
+    /\b(?:when|what time)\b/i,
+    (s) => pick(['Late afternoon.', 'Around lunchtime.', 'First thing in the morning.', 'Early evening.'], s, 'when'),
+  ],
+  [
+    /\b(?:did|do|does|have|has|are|is|was|were|can|could|will|would|any)\b/i,
+    (s) =>
+      // Kept shape-neutral: these have to read sensibly after "did you", "were you" and
+      // "have you" alike, so anything that presumes the subject of the question is out.
+      pick(['Yes.', 'No, I didn’t.', 'Yes, briefly.', 'No, not really.'], s, 'yn'),
+  ],
+];
+
+/** Stable key for a question, so the same thing asked twice reuses one answer. */
+function questionKey(question: string): string {
+  const words = question
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOPWORDS.has(w))
+    .sort()
+    .slice(0, 5);
+  return `q_${hash(words.join('_')) % 1_000_000}`;
+}
+
+const STOPWORDS = new Set([
+  'the', 'and', 'you', 'your', 'for', 'was', 'were', 'did', 'does', 'have', 'has', 'are',
+  'that', 'this', 'with', 'any', 'can', 'could', 'would', 'will', 'about', 'from', 'know',
+  'tell', 'need', 'please', 'just', 'get', 'got',
+]);
+
+export function improviseFreeform(
+  question: string,
+  seed: string,
+  known: Record<string, string>,
+): ImproviseResult | null {
+  for (const [pattern, reply] of REFUSE) {
+    if (pattern.test(question)) return { answer: reply };
+  }
+
+  const key = questionKey(question);
+  const remembered = known[key];
+  if (remembered) return { answer: remembered };
+
+  const shape = FREEFORM_SHAPES.find(([pattern]) => pattern.test(question));
+  const answer = shape
+    ? shape[1](seed + key)
+    : pick(
+        [
+          'Nothing unusual, no.',
+          'Nothing I can think of.',
+          'Same as I mentioned, nothing new.',
+          'No, that’s everything.',
+        ],
+        seed + key,
+        'plain',
+      );
+  return { answer, remember: { key, value: answer } };
+}
+
 /** Every improvised value so far, for the model prompt so it stays consistent too. */
 export function improvisedSummary(known: Record<string, string>): string {
   const entries = Object.entries(known);

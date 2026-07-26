@@ -156,12 +156,37 @@ function bestHumanOutcome(specialist: boolean): string {
  * Did they ask us something? A question mark is the cheap signal, but intake staff
  * routinely ask without one ("tell me what happened", "let me know the date").
  */
+/**
+ * Words that name a detail an intake desk collects. Used only to read telegraphic requests.
+ */
+const DETAIL_WORDS =
+  /\b(?:name|dob|birth|address|location|city|street|intersection|time|date|day|phone|number|email|insurance|insurer|policy|claim|injur\w*|hurt|doctor|hospital|police|report|damage|vehicle|car|plate|employer|driver)\b/i;
+
+/**
+ * Did they ask us something? A question mark is the cheap signal, but intake staff
+ * routinely ask without one ("tell me what happened", "let me know the date").
+ *
+ * They also type telegraphically, with no verb and no punctuation at all: "location", "what
+ * time and date", "dob". Those are requests, and reading them as remarks makes the persona
+ * pursue its own agenda while a real question sits unanswered — the exact behaviour that
+ * produced "what time and date" → "Are you the person who handles these?" in a live run.
+ * The word cap keeps this to fragments; a full sentence that merely mentions a car is prose.
+ */
 function askedUsSomething(body: string | null): boolean {
   if (!body) return false;
   if (body.includes('?')) return true;
-  return /\b(?:tell me|let me know|can you (?:confirm|send|share|provide)|what (?:is|was|are)|when (?:did|was)|where (?:did|was)|how (?:did|bad|many|long)|who (?:was|is)|please (?:confirm|send|share|provide|describe)|need (?:to know|your)|send me)\b/i.test(
-    body,
-  );
+  if (
+    /\b(?:tell me|let me know|can you (?:confirm|send|share|provide)|what (?:is|was|are|time|date)|when (?:did|was)|where (?:did|was)|how (?:did|bad|many|long)|who (?:was|is)|please (?:confirm|send|share|provide|describe)|need (?:to know|your)|send me)\b/i.test(
+      body,
+    )
+  ) {
+    return true;
+  }
+  const words = body.trim().split(/\s+/);
+  // A fragment about themselves is a statement, not a request: "we handle car accidents"
+  // names a detail word and asks for nothing.
+  if (/\b(?:we|our|us)\b/i.test(body)) return false;
+  return words.length <= 8 && DETAIL_WORDS.test(body);
 }
 
 function nextGoal(view: RunView, cls: Classification, humanSeen: boolean, lastInbound: string | null): Goal {

@@ -351,3 +351,49 @@ describe('patience before asking for a person', () => {
     assert.equal(decideNow(view, cls, 'Ok.').action, 'terminate');
   });
 });
+
+const { improviseFreeform } = await import('../src/judge/improvise.ts');
+
+/**
+ * Every question gets an answer. Where the brief is silent one is invented — and then reused,
+ * because a persona that contradicts itself is both obvious and unmeasurable.
+ */
+describe('answering questions the brief never covered', () => {
+
+  test('elliptical intake questions reach the answer_question goal', () => {
+    const view = {
+      turns: 2, inboundCount: 2, machineInbound: 0, humanSeen: true, turnsSinceHuman: 1,
+      priceSeen: false, meetingOffered: false, specialistSeen: false, t0: new Date().toISOString(),
+    };
+    const cls = { sender_type: 'human' as const, flags: readIn('ok', []).flags, classifier: 'test', reasons: [] };
+    // No question mark, no verb — this exact message answered the wrong thing in a live run.
+    for (const q of ['what time and date', 'location', 'dob', 'time and date?']) {
+      assert.equal(decideNow(view, cls, q).goal, 'answer_question', `missed request: ${q}`);
+    }
+    // A fragment about themselves is a statement, not a request.
+    assert.notEqual(decideNow(view, cls, 'we handle car accident cases').goal, 'answer_question');
+  });
+
+  test('an unanticipated question still gets an answer, and the same one twice', () => {
+    const first = improviseFreeform('how many passengers were in the car?', 'run_x', {});
+    assert.ok(first?.answer);
+    assert.ok(first.remember, 'an invented answer must be persisted or it will drift');
+    const known = { [first.remember.key]: first.remember.value };
+    const again = improviseFreeform('How many passengers were in the car?', 'run_x', known);
+    assert.equal(again?.answer, first.answer, 'the same question must not get a new answer');
+  });
+
+  test('the shape of the answer follows the question', () => {
+    assert.match(improviseFreeform('how long were you there?', 'run_x', {}).answer, /minute|hour|day|week/i);
+    assert.match(improviseFreeform('who else was in the car?', 'run_x', {}).answer, /[A-Z][a-z]+|Nobody/);
+  });
+
+  test('data that causes real damage is refused, never invented', () => {
+    for (const q of ['whats your ssn', 'card number please', "driver's licence number?"]) {
+      const r = improviseFreeform(q, 'run_x', {});
+      assert.ok(r, `no reply to ${q}`);
+      assert.equal(r.remember, undefined, `a refusal must not be stored as a fact: ${q}`);
+      assert.doesNotMatch(r.answer, /\d{3,}/, `refusal must not contain digits: ${q}`);
+    }
+  });
+});
