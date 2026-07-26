@@ -17,6 +17,7 @@
       --accent-hover: #1d4ed8;
       --danger: #b91c1c;
       --ok: #15803d;
+      --selected: #eff6ff;
     }
     * { box-sizing: border-box; }
     body {
@@ -27,7 +28,7 @@
       line-height: 1.45;
     }
     main {
-      max-width: 720px;
+      max-width: 960px;
       margin: 0 auto;
       padding: 1.25rem;
     }
@@ -36,12 +37,26 @@
       margin: 0 0 1rem;
       font-weight: 650;
     }
+    h2 {
+      font-size: 0.95rem;
+      margin: 0 0 0.75rem;
+      font-weight: 650;
+    }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1rem;
       margin-bottom: 1rem;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+    @media (max-width: 720px) {
+      .layout { grid-template-columns: 1fr; }
     }
     label {
       display: block;
@@ -98,6 +113,51 @@
     .badge.goal_reached { background: #dbeafe; color: #1d4ed8; }
     .badge.declined { background: #fef3c7; color: #b45309; }
     .badge.expired { background: #fee2e2; color: var(--danger); }
+    .conv-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    .conv-item {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.7rem;
+      font-weight: 500;
+    }
+    .conv-item:hover {
+      background: var(--bg);
+    }
+    .conv-item.selected {
+      background: var(--selected);
+      border-color: var(--accent);
+    }
+    .conv-item .name {
+      font-size: 0.9rem;
+      font-weight: 650;
+      margin-bottom: 0.25rem;
+    }
+    .conv-item .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: center;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .conv-item .preview {
+      margin-top: 0.35rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .thread {
       display: flex;
       flex-direction: column;
@@ -175,16 +235,25 @@
       </form>
     </section>
 
-    <section class="card">
-      <div class="meta" id="meta">
-        <span class="badge" id="status">none</span>
-        <span id="phones"></span>
-      </div>
-      <div id="booking"></div>
-      <div class="thread" id="thread">
-        <div class="empty">No conversation yet. Start one above.</div>
-      </div>
-    </section>
+    <div class="layout">
+      <section class="card">
+        <h2>Conversations</h2>
+        <div class="conv-list" id="conv-list">
+          <div class="empty">No conversations yet.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="meta" id="meta">
+          <span class="badge" id="status">none</span>
+          <span id="phones"></span>
+        </div>
+        <div id="booking"></div>
+        <div class="thread" id="thread">
+          <div class="empty">No conversation yet. Start one above.</div>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script>
@@ -195,6 +264,9 @@
     const phonesEl = document.getElementById("phones");
     const bookingEl = document.getElementById("booking");
     const threadEl = document.getElementById("thread");
+    const convListEl = document.getElementById("conv-list");
+
+    let selectedConversationId = null;
 
     async function loadConfig() {
       const res = await fetch("/ui/config");
@@ -213,6 +285,12 @@
       }
     }
 
+    function truncate(text, max) {
+      if (!text) return "";
+      if (text.length <= max) return text;
+      return text.slice(0, max - 1) + "…";
+    }
+
     function renderConversation(data) {
       if (!data) {
         statusEl.textContent = "none";
@@ -223,6 +301,7 @@
         return;
       }
 
+      selectedConversationId = data.id;
       statusEl.textContent = data.status;
       statusEl.className = "badge " + data.status;
       phonesEl.textContent =
@@ -273,15 +352,92 @@
       threadEl.scrollTop = threadEl.scrollHeight;
     }
 
+    function renderConversationList(summaries) {
+      if (!summaries || summaries.length === 0) {
+        convListEl.innerHTML = '<div class="empty">No conversations yet.</div>';
+        return;
+      }
+
+      convListEl.innerHTML = summaries
+        .map(function (s) {
+          const selected = s.id === selectedConversationId ? " selected" : "";
+          return (
+            '<button type="button" class="conv-item' +
+            selected +
+            '" data-id="' +
+            s.id +
+            '"><div class="name"></div><div class="row"><span class="badge ' +
+            s.status +
+            '">' +
+            s.status +
+            '</span><span class="when"></span></div><div class="preview"></div></button>'
+          );
+        })
+        .join("");
+
+      const items = convListEl.querySelectorAll(".conv-item");
+      summaries.forEach(function (s, i) {
+        const item = items[i];
+        item.querySelector(".name").textContent = s.firmName || s.firmPhone;
+        item.querySelector(".when").textContent = formatTime(
+          s.lastMessage ? s.lastMessage.createdAt : s.startedAt,
+        );
+        item.querySelector(".preview").textContent = s.lastMessage
+          ? truncate(s.lastMessage.body, 60)
+          : "No messages yet";
+        item.addEventListener("click", function () {
+          selectConversation(s.id);
+        });
+      });
+    }
+
+    async function selectConversation(id) {
+      selectedConversationId = id;
+      await refreshConversation();
+      await refreshConversationList();
+    }
+
     async function refreshConversation() {
       try {
-        const res = await fetch("/ui/conversation");
+        const url = selectedConversationId
+          ? "/ui/conversation/" + encodeURIComponent(selectedConversationId)
+          : "/ui/conversation";
+        const res = await fetch(url);
+        if (res.status === 404) {
+          selectedConversationId = null;
+          renderConversation(null);
+          return;
+        }
         if (!res.ok) return;
         const data = await res.json();
         renderConversation(data);
       } catch {
         // ignore transient poll errors
       }
+    }
+
+    async function refreshConversationList() {
+      try {
+        const res = await fetch("/ui/conversations");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (
+          !selectedConversationId &&
+          Array.isArray(data) &&
+          data.length > 0
+        ) {
+          selectedConversationId = data[0].id;
+          await refreshConversation();
+        }
+        renderConversationList(data);
+      } catch {
+        // ignore transient poll errors
+      }
+    }
+
+    async function refreshAll() {
+      await refreshConversationList();
+      await refreshConversation();
     }
 
     form.addEventListener("submit", async function (e) {
@@ -306,7 +462,8 @@
         }
         formMsg.className = "ok-msg";
         formMsg.textContent = "Started. Conversation " + data.conversationId.slice(0, 8) + "…";
-        await refreshConversation();
+        selectedConversationId = data.conversationId;
+        await refreshAll();
       } catch (err) {
         formMsg.className = "error";
         formMsg.textContent = err.message || "Start failed";
@@ -319,8 +476,8 @@
       formMsg.className = "error";
       formMsg.textContent = err.message || "Config load failed";
     });
-    refreshConversation();
-    setInterval(refreshConversation, 3000);
+    refreshAll();
+    setInterval(refreshAll, 3000);
   </script>
 </body>
 </html>

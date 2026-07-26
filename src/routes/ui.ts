@@ -90,6 +90,23 @@ export function createUiRouter(deps: {
     }
   });
 
+  router.get("/ui/conversations", (_req: Request, res: Response) => {
+    const summaries = deps.store.listConversationSummaries();
+    res.json(
+      summaries.map((s) => ({
+        id: s.id,
+        firmName: s.firmName,
+        firmPhone: s.firmPhone,
+        fromPhone: s.fromPhone,
+        status: s.status,
+        startedAt: s.startedAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount,
+        lastMessage: s.lastMessage,
+      })),
+    );
+  });
+
   router.get("/ui/conversation", (_req: Request, res: Response) => {
     const snapshot = deps.store.getLatestSnapshot();
     if (!snapshot) {
@@ -97,24 +114,56 @@ export function createUiRouter(deps: {
       return;
     }
 
-    const { conversation, messages } = snapshot;
-    res.json({
-      id: conversation.id,
-      status: conversation.status,
-      firmName: conversation.firmName,
-      firmPhone: conversation.firmPhone,
-      fromPhone: conversation.fromPhone,
-      bookingUrl: conversation.bookingUrl,
-      stopReason: conversation.stopReason,
-      startedAt: conversation.startedAt,
-      expiresAt: conversation.expiresAt,
-      messages: messages.map((m) => ({
-        direction: m.direction,
-        body: m.body,
-        createdAt: m.createdAt,
-      })),
-    });
+    res.json(serializeSnapshot(snapshot));
+  });
+
+  router.get("/ui/conversation/:id", (req: Request, res: Response) => {
+    const id = String(req.params.id ?? "");
+    const snapshot = deps.store.getSnapshot(id);
+    if (!snapshot) {
+      res.status(404).json(null);
+      return;
+    }
+
+    res.json(serializeSnapshot(snapshot));
   });
 
   return router;
+}
+
+function serializeSnapshot(snapshot: {
+  conversation: {
+    id: string;
+    status: string;
+    firmName: string;
+    firmPhone: string;
+    fromPhone: string;
+    bookingUrl: string | null;
+    stopReason: string | null;
+    startedAt: string;
+    expiresAt: string;
+  };
+  messages: Array<{
+    direction: string;
+    body: string;
+    createdAt: string;
+  }>;
+}) {
+  const { conversation, messages } = snapshot;
+  return {
+    id: conversation.id,
+    status: conversation.status,
+    firmName: conversation.firmName,
+    firmPhone: conversation.firmPhone,
+    fromPhone: conversation.fromPhone,
+    bookingUrl: conversation.bookingUrl,
+    stopReason: conversation.stopReason,
+    startedAt: conversation.startedAt,
+    expiresAt: conversation.expiresAt,
+    messages: messages.map((m) => ({
+      direction: m.direction,
+      body: m.body,
+      createdAt: m.createdAt,
+    })),
+  };
 }
