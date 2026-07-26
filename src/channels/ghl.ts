@@ -127,8 +127,101 @@ export async function ensureContact(input: {
 }
 
 let pollTimer: NodeJS.Timeout | null = null;
+/** Kept so a webhook can trigger an immediate read without waiting for the next tick. */
+let activeSink: InboundSink | null = null;
 /** provider_id values already handed to the sink. Dedupe also lives in the DB. */
 const seen = new Set<string>();
+
+/**
+ * Reads one run's conversation and delivers anything new.
+ *
+ * This is the single source of inbound truth, used by both the poll timer and the webhook.
+ * GoHighLevel's workflow webhook action fires "containing the contact's details" — it does
+ * not reliably carry a message id or body, so a webhook is treated as a signal that
+ * something arrived rather than as the message itself. Reading back from the API also means
+ * the body, timestamp and id are the provider's own values, which is what dedupe and the
+ * history floor depend on.
+ */
+export async function drainConversation(runId: string, sink: InboundSink): Promise<number> {
+  const run = runs.get(runId);
+  if (!run || run.provider !== 'ghl' || !run.provider_conversation_id) return 0;
+
+  let delivered = 0;
+  try {
+    const res = await api('GET', `/conversations/${run.provider_conversation_id}/messages?limit=20`, {
+      version: CONVERSATIONS_VERSION,
+    });
+    if (!res.ok) return 0;
+    const list: Json[] = res.body?.messages?.messages ?? res.body?.messages ?? [];
+
+    /**
+     * Hard floor on message age. A shared CRM number carries unrelated history, and the
+     * conversation a run binds to may already contain prior traffic — including our own
+     * earlier runs. Anything dated before this run opened is history.
+     *
+     * This must be a timestamp comparison, not the seen-set: that set is process-local, so
+     * priming it in one process does nothing for another and a restart empties it. Either
+     * case replays old messages as live replies, which fabricates an entire conversation
+     * and drove a real run to a terminal state in twelve seconds with nobody having texted.
+     */
+    const floor = new Date(run.t0 ?? run.created_at).getTime();
+
+    // Oldest first so a burst of replies is delivered in order.
+    for (const m of [...list].reverse()) {
+      const id = m.id ?? m.messageId;
+      const inbound = m.direction === 'inbound';
+      if (!id || !inbound || seen.has(id)) continue;
+      const body = String(m.body ?? '').trim();
+      if (!body) continue;
+
+      const at = new Date(m.dateAdded ?? 0).getTime();
+      if (!Number.isFinite(at) || at < floor) {
+        seen.add(id);
+        logEvent(runId, 'inbound_predates_run', {
+          provider_id: id,
+          at: m.dateAdded ?? null,
+          run_opened: run.t0 ?? run.created_at,
+        });
+        continue;
+      }
+      seen.add(id);
+      delivered += 1;
+      await sink({
+        provider: 'ghl',
+        provider_id: id,
+        from: m.contactId ?? run.provider_contact_id ?? 'unknown',
+        to: config.channel.ghl.fromNumber,
+        body,
+        ts: m.dateAdded ?? new Date().toISOString(),
+        run_id: runId,
+      } satisfies InboundEvent);
+    }
+  } catch (err) {
+    logEvent(runId, 'ghl_poll_error', { error: (err as Error).message });
+  }
+  return delivered;
+}
+
+async function pollAllRuns(sink: InboundSink): Promise<void> {
+  for (const run of runs.active()) {
+    if (run.provider === 'ghl') await drainConversation(run.id, sink);
+  }
+}
+
+/**
+ * Webhook entry point for a payload that identifies a contact but carries no usable
+ * message. Resolves the run and reads the conversation immediately, so latency is the
+ * webhook's rather than the poll interval's.
+ */
+export async function drainForContact(ids: {
+  contactId?: string | null;
+  conversationId?: string | null;
+}): Promise<{ run_id: string | null; delivered: number }> {
+  const run = runs.byProviderIds(ids);
+  if (!run) return { run_id: null, delivered: 0 };
+  if (!activeSink) return { run_id: run.id, delivered: 0 };
+  return { run_id: run.id, delivered: await drainConversation(run.id, activeSink) };
+}
 
 export const ghlAdapter: ChannelAdapter = {
   name: 'ghl',
@@ -176,69 +269,11 @@ export const ghlAdapter: ChannelAdapter = {
    * safely. Set GHL_POLL_MS=0 to run webhook-only.
    */
   start(sink: InboundSink): void {
+    activeSink = sink;
     if (pollTimer || config.channel.ghl.pollMs <= 0) return;
-    const tick = async (): Promise<void> => {
-      for (const run of runs.active()) {
-        if (run.provider !== 'ghl') continue;
-        const runId = run.id;
-        const binding = { contact_id: run.provider_contact_id!, conversation_id: run.provider_conversation_id };
-        if (!binding.conversation_id) continue;
-        try {
-          const res = await api('GET', `/conversations/${binding.conversation_id}/messages?limit=20`, {
-            version: CONVERSATIONS_VERSION,
-          });
-          if (!res.ok) continue;
-          const list: Json[] = res.body?.messages?.messages ?? res.body?.messages ?? [];
-          /**
-           * Hard floor on message age. A shared CRM number carries unrelated history, and
-           * the conversation a run binds to may already contain prior traffic — including
-           * our own earlier runs. Anything dated before this run opened is history.
-           *
-           * This must be a timestamp comparison, not the seen-set: that set is
-           * process-local, so priming it in one process does nothing for another and a
-           * router restart empties it. Either case replays old messages as live replies,
-           * which fabricates an entire conversation and drove a real run to a terminal
-           * state in twelve seconds with no one having texted.
-           */
-          const floor = new Date(run.t0 ?? run.created_at).getTime();
-
-          // Oldest first so a burst of replies is delivered in order.
-          for (const m of [...list].reverse()) {
-            const id = m.id ?? m.messageId;
-            const inbound = m.direction === 'inbound';
-            if (!id || !inbound || seen.has(id)) continue;
-            const body = String(m.body ?? '').trim();
-            if (!body) continue;
-
-            const at = new Date(m.dateAdded ?? 0).getTime();
-            if (!Number.isFinite(at) || at < floor) {
-              seen.add(id);
-              logEvent(runId, 'inbound_predates_run', {
-                provider_id: id,
-                at: m.dateAdded ?? null,
-                run_opened: run.t0 ?? run.created_at,
-              });
-              continue;
-            }
-            seen.add(id);
-            await sink({
-              provider: 'ghl',
-              provider_id: id,
-              from: m.contactId ?? binding.contact_id,
-              to: config.channel.ghl.fromNumber,
-              body,
-              ts: m.dateAdded ?? new Date().toISOString(),
-              run_id: runId,
-            } satisfies InboundEvent);
-          }
-        } catch (err) {
-          logEvent(runId, 'ghl_poll_error', { error: (err as Error).message });
-        }
-      }
-    };
-    pollTimer = setInterval(() => void tick(), config.channel.ghl.pollMs);
+    pollTimer = setInterval(() => void pollAllRuns(sink), config.channel.ghl.pollMs);
     pollTimer.unref?.();
-    void tick();
+    void pollAllRuns(sink);
   },
 
   stop(): void {

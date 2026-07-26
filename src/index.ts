@@ -17,7 +17,7 @@ import { openRun, handleInbound, sweep, useAdapter, checkSendGate, cleanupRun, t
 import { judgeStatus, listModels } from './judge/llm.ts';
 import { runCalibration } from './judge/calibrate.ts';
 import { OUTCOMES } from './domain/states.ts';
-import { ghlAdapter, bindRun, ensureContact, runForProviderIds, parseGhlWebhook, markSeen } from './channels/ghl.ts';
+import { ghlAdapter, bindRun, ensureContact, runForProviderIds, parseGhlWebhook, markSeen, drainForContact } from './channels/ghl.ts';
 import { mockAdapter } from './channels/mock.ts';
 import type { InboundEvent } from './channels/types.ts';
 
@@ -219,13 +219,35 @@ app.post('/api/inbound/:provider', async (req, res) => {
   try {
     if (req.params.provider === 'ghl') {
       const { event, skip } = parseGhlWebhook(payload);
-      if (!event) {
-        logEvent(null, 'webhook_skipped', { reason: skip, keys: Object.keys(payload).slice(0, 25) });
-        return res.status(202).json({ ok: true, ignored: skip });
+
+      if (event) {
+        markSeen(event.provider_id);
+        const result = await sink(event);
+        return res.json({ ok: true, source: 'payload', ...result });
       }
-      markSeen(event.provider_id);
-      const result = await sink(event);
-      return res.json({ ok: true, ...result });
+
+      /**
+       * GoHighLevel's workflow webhook action fires "containing the contact's details" —
+       * it carries the contact but not reliably a message id or body. Rather than depend
+       * on merge tags being configured correctly in the UI, treat the webhook as a signal
+       * and read the conversation from the API, which is authoritative. Latency is then the
+       * webhook's rather than the poll interval's, and dedupe still uses the provider's own
+       * message ids.
+       */
+      const contactId = payload.contact_id ?? payload.contactId ?? null;
+      const conversationId = payload.conversation_id ?? payload.conversationId ?? null;
+      if (contactId || conversationId) {
+        const drained = await drainForContact({ contactId, conversationId });
+        logEvent(drained.run_id, 'webhook_triggered_read', {
+          reason: skip,
+          contact_id: contactId,
+          delivered: drained.delivered,
+        });
+        return res.json({ ok: true, source: 'webhook_triggered_read', ...drained });
+      }
+
+      logEvent(null, 'webhook_skipped', { reason: skip, keys: Object.keys(payload).slice(0, 25) });
+      return res.status(202).json({ ok: true, ignored: skip });
     }
 
     // Generic shape, used by tests and by anything that posts our own format.
