@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- Fixture: advertises 24/7 availability, but every channel is gated or synchronous.
+     Toll-free number only, reCAPTCHA on the form, no email, chat widget.
+     Expected: SMS attempted once (line type unknown), and once the carrier rejects it the
+     cached verdict makes this target UNREACHABLE. That contrast is the finding. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hollis &amp; Partners &mdash; Accident Attorneys</title>
+    <meta property="og:site_name" content="Hollis &amp; Partners" />
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <script src="https://embed.tawk.to/fixture/default"></script>
+  </head>
+  <body>
+    <header>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/contact">Contact</a>
+      </nav>
+      <a href="tel:+18885550117">1-888-555-0117</a>
+    </header>
+
+    <main>
+      <h1>Available 24/7. Injured? Call now.</h1>
+      <p>
+        Hollis &amp; Partners represents accident victims across Texas. Our personal injury lawyers
+        handle car accident claims, truck accident cases, and wrongful death matters.
+        Available 24 hours a day, 7 days a week.
+      </p>
+
+      <h2>Request a free case evaluation</h2>
+      <form action="/leads" method="post">
+        <input type="text" name="name" />
+        <input type="tel" name="phone" />
+        <textarea name="describe_your_case"></textarea>
+        <div class="g-recaptcha" data-sitekey="fixture-site-key"></div>
+        <button type="submit">Submit</button>
+      </form>
+
+      <p>Prefer to chat? Use the live chat widget in the corner of your screen.</p>
+    </main>
+
+    <footer>
+      <p>Hollis &amp; Partners, 500 Main Street, Houston, TX 77002</p>
+      <p>Hours: Open 24 hours a day, every day.</p>
+    </footer>
+  </body>
+</html>

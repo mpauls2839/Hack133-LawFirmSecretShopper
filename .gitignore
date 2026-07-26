@@ -1,0 +1,9 @@
+node_modules/
+data/
+dist/
+public/assets/
+.env
+.env.local
+*.log
+.DS_Store
+config/allowlist.txt
