@@ -13,7 +13,29 @@
       "Ask about consultation process",
       "Obtain a booking or scheduling link"
     ],
-    "tone": "polite, concise, slightly anxious but cooperative"
+    "tone": "polite, concise, slightly anxious but cooperative",
+    "disclosureStyle": "Reveal one or two concrete specifics per message when asked; do not dump the full story at once.",
+    "background": {
+      "occupation": "marketing manager at a mid-size company",
+      "situation": "Has a packed work week and prefers a short call or online consult over an in-office visit if possible."
+    },
+    "caseFacts": {
+      "incidentDate": "last Tuesday around 5:40pm",
+      "location": "stoplight at Main St and 5th Ave in Springfield",
+      "howItHappened": "Was stopped at a red light when another car hit me from behind.",
+      "otherDriver": "Younger driver who said they looked down at their phone; exchanged info and their insurance card.",
+      "injuries": [
+        "neck stiffness that got worse overnight",
+        "bruised right knee from the dash",
+        "mild headache the next morning"
+      ],
+      "medicalTreatment": "Went to urgent care the next day; they recommended rest, ibuprofen, and follow-up if pain continues.",
+      "vehicleDamage": "Rear bumper cracked and trunk lid won't close flush; still drivable.",
+      "policeReport": "Officer came out and took a report; I have the report number on a card.",
+      "insuranceStatus": "Filed a claim with my insurer but haven't spoken to the other driver's company yet; worried they'll lowball me.",
+      "currentConcerns": "Not sure whether to accept a settlement offer or talk to a lawyer first; also anxious about time off work for appointments.",
+      "availability": "Usually free evenings after 6pm or Thursday afternoons."
+    }
   },
   "replyDelaySeconds": 15,
   "intakeAnalyst": {

@@ -64,21 +64,25 @@ abstract class LlmTurnDecider implements TurnDecider {
       "Otherwise write replyText as a natural SMS from the persona.",
       "",
       "Reply rules:",
-      "- Acknowledge something specific from the latest inbound SMS (do not ignore it).",
+      "- Directly answer whatever the latest inbound SMS asks, using the relevant concrete fact from Case facts below.",
+      "- Include at least one NEW specific detail this turn (location, injury, insurance, date, etc.). Disclose facts progressively; do not dump everything at once.",
       "- 1–2 short SMS sentences max; no essays, no bullet lists, no markdown.",
-      "- Never repeat a prior outbound message verbatim or near-verbatim.",
-      "- Do not restate the full accident story every turn; only add a new detail if asked.",
-      "- Progress the conversation: confirm fit → ask for next step → ask for a booking/scheduling link.",
+      "- NEVER repeat a prior outbound message verbatim or near-verbatim. Do not reuse the same opener, sentence structure, or closing ask.",
+      "- Vary phrasing every turn: avoid always starting with \"Thanks\", \"Thank you\", or \"Great\". Mix natural openers.",
+      "- Progress the conversation: confirm fit → answer their questions with specifics → ask for next step → ask for a booking/scheduling link.",
       "- If the firm already agreed to help or schedule, ask for a concrete booking link or times.",
-      "- Stay in persona tone; sound like a real prospect texting, not a bot.",
+      "- Stay in persona tone; sound like a real prospect texting, not a bot. Only use facts listed below; do not invent new case details.",
       "",
       `Persona name: ${input.persona.name}`,
       `Persona summary: ${input.persona.summary}`,
       `Problem: ${input.persona.problem}`,
       `Tone: ${input.persona.tone}`,
       `Goals: ${input.persona.goals.join("; ")}`,
+      formatBackground(input.persona.background),
+      formatDisclosureStyle(input.persona.disclosureStyle),
+      formatCaseFacts(input.persona.caseFacts),
       "",
-      "Prior outbound messages (do not repeat these):",
+      "Prior outbound messages (do not repeat these; do not reuse their wording):",
       priorOutbound.length ? priorOutbound.map((b, i) => `${i + 1}. ${b}`).join("\n") : "(none)",
       "",
       "Conversation so far:",
@@ -86,7 +90,9 @@ abstract class LlmTurnDecider implements TurnDecider {
       "",
       `Latest inbound SMS: ${input.inboundBody}`,
       `Extracted URLs: ${urls.length ? urls.join(", ") : "(none)"}`,
-    ].join("\n");
+    ]
+      .filter((line) => line !== null)
+      .join("\n");
   }
 
   protected parseDecision(raw: string, urls: string[]): TurnDecision {
@@ -206,4 +212,56 @@ function extractJsonObject(raw: string): string {
     return trimmed.slice(start, end + 1);
   }
   throw new Error(`Model response was not JSON: ${raw}`);
+}
+
+function formatDisclosureStyle(style: string | undefined): string | null {
+  if (!style) return null;
+  return `Disclosure style: ${style}`;
+}
+
+function formatBackground(
+  background:
+    | { occupation?: string; situation?: string }
+    | undefined,
+): string | null {
+  if (!background) return null;
+  const parts: string[] = [];
+  if (background.occupation) parts.push(`Occupation: ${background.occupation}`);
+  if (background.situation) parts.push(`Situation: ${background.situation}`);
+  if (parts.length === 0) return null;
+  return ["Background:", ...parts.map((p) => `- ${p}`)].join("\n");
+}
+
+function formatCaseFacts(
+  facts:
+    | {
+        incidentDate?: string;
+        location?: string;
+        howItHappened?: string;
+        otherDriver?: string;
+        injuries?: string[];
+        medicalTreatment?: string;
+        vehicleDamage?: string;
+        policeReport?: string;
+        insuranceStatus?: string;
+        currentConcerns?: string;
+        availability?: string;
+      }
+    | undefined,
+): string | null {
+  if (!facts) return null;
+  const lines: string[] = [];
+  if (facts.incidentDate) lines.push(`- Incident date: ${facts.incidentDate}`);
+  if (facts.location) lines.push(`- Location: ${facts.location}`);
+  if (facts.howItHappened) lines.push(`- How it happened: ${facts.howItHappened}`);
+  if (facts.otherDriver) lines.push(`- Other driver: ${facts.otherDriver}`);
+  if (facts.injuries?.length) lines.push(`- Injuries: ${facts.injuries.join("; ")}`);
+  if (facts.medicalTreatment) lines.push(`- Medical treatment: ${facts.medicalTreatment}`);
+  if (facts.vehicleDamage) lines.push(`- Vehicle damage: ${facts.vehicleDamage}`);
+  if (facts.policeReport) lines.push(`- Police report: ${facts.policeReport}`);
+  if (facts.insuranceStatus) lines.push(`- Insurance: ${facts.insuranceStatus}`);
+  if (facts.currentConcerns) lines.push(`- Current concerns: ${facts.currentConcerns}`);
+  if (facts.availability) lines.push(`- Availability: ${facts.availability}`);
+  if (lines.length === 0) return null;
+  return ["Case facts (use these when answering; do not invent others):", ...lines].join("\n");
 }
