@@ -20,6 +20,8 @@ export const ROOT = resolve(import.meta.dirname, '..');
 
 export const config = {
   port: int(process.env.PORT, 3000),
+  /** The port declared to Maritime at create time, which is what public traffic hits. */
+  exposedPort: int(process.env.EXPOSED_PORT, 3000),
   dbPath: process.env.DB_PATH ?? resolve(ROOT, 'data/intake-grader.db'),
   routerPublicUrl: process.env.ROUTER_PUBLIC_URL ?? '',
 

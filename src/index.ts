@@ -202,20 +202,33 @@ const sweepTimer = setInterval(() => {
 }, config.loop.sweepMs);
 sweepTimer.unref?.();
 
-const server = app.listen(config.port, () => {
+/**
+ * Maritime injects PORT (e.g. 18789) but routes public traffic to the port declared at
+ * `maritime create --port`. Those disagree, and guessing wrong means the platform health
+ * check fails and kills the process. Binding both removes the guess.
+ */
+const ports = [...new Set([config.port, config.exposedPort].filter((p) => p > 0))];
+const servers = ports.map((port) =>
+  app.listen(port, () => {
+    console.log(`  listening    :${port}`);
+  }),
+);
+
+{
   const judge = judgeStatus();
-  console.log(`intake-grader router on :${config.port}`);
+  console.log(`intake-grader router`);
   console.log(`  adapter      ${adapter.name}`);
   console.log(`  judge        ${judge.driver}${judge.driver === 'http' ? ` (${judge.model})` : ''} — ${judge.reason}`);
   console.log(`  live sends   ${config.channel.allowLiveSends}   allowlist ${JSON.stringify(loadAllowlist())}`);
   console.log(`  persona      ${persona.name} [${persona.need_tags.join(', ')}]`);
   console.log(`  sweep every  ${config.loop.sweepMs / 1000}s`);
-});
+}
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     adapter.stop?.();
     clearInterval(sweepTimer);
-    server.close(() => process.exit(0));
+    for (const server of servers) server.close();
+    setTimeout(() => process.exit(0), 500).unref();
   });
 }

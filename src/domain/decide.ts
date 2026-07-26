@@ -96,7 +96,10 @@ export function decide(view: RunView, cls: Classification): Decision {
     };
   }
 
-  if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS) {
+  // Only settle for HUMAN_* once there is genuinely no booking in play. Closing while a
+  // slot is on the table throws away the better outcome one turn before it lands.
+  const bookingInPlay = f.meeting_offered || f.booking_link || view.meetingOffered;
+  if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS && !bookingInPlay) {
     const specialist = f.specialist_identified || view.specialistSeen;
     return {
       action: 'terminate',

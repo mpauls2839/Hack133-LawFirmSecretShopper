@@ -1,0 +1,193 @@
+{
+  "_comment": [
+    "Hand-labeled inbound messages (spec section 6). The tier 1 judge must agree with",
+    "these labels at least 80% of the time before its output is trusted.",
+    "",
+    "Six of these are verbatim from a live GoHighLevel run on 2026-07-26 where a human",
+    "played the firm; `note` records where the classifier originally disagreed. Those are",
+    "the most valuable rows in the file because they are real, not imagined.",
+    "",
+    "seconds_since_outbound is the gap between our last message and this reply, taken from",
+    "timestamps. It is evidence, never the verdict: a human on their phone answers in 30",
+    "seconds routinely, so only a sub-10-second reply is machine-grade fast.",
+    "",
+    "`flags` lists only the flags that MUST be true. Others are not asserted."
+  ],
+  "cases": [
+    {
+      "id": "live-01",
+      "source": "live run 2026-07-26",
+      "body": "hi",
+      "seconds_since_outbound": 112,
+      "expect": "human",
+      "note": "Bare greeting typed by a person. Originally misread as ai_agent; there is no content signal at all, so this is the hardest row in the set and the one most likely to stay wrong.",
+      "flags": {}
+    },
+    {
+      "id": "live-02",
+      "source": "live run 2026-07-26",
+      "body": "Hi Dana this is Marcy at thr front desk So sorry to hear that",
+      "seconds_since_outbound": 39,
+      "expect": "human",
+      "note": "Names herself, typo 'thr', missing punctuation. Originally misread as autoresponder because a 39s gap scored equal to the human signal and the tie broke the wrong way.",
+      "flags": {}
+    },
+    {
+      "id": "live-03",
+      "source": "live run 2026-07-26",
+      "body": "was a police report filled and have you seen a doctor?",
+      "seconds_since_outbound": 30,
+      "expect": "human",
+      "note": "Typo 'filled' for 'filed', lowercase start. Originally ai_agent.",
+      "flags": {}
+    },
+    {
+      "id": "live-04",
+      "source": "live run 2026-07-26",
+      "body": "Don't give their insurer a recorded statement yet. Our injury attorney Ruth Alvarez handles rear-end cases. Consultation is free and we work on contingency, so nothing out of pocket.",
+      "seconds_since_outbound": 160,
+      "expect": "human",
+      "note": "Names a specific attorney and gives fee terms. Originally ai_agent.",
+      "flags": { "price_given": true, "specialist_identified": true }
+    },
+    {
+      "id": "live-05",
+      "source": "live run 2026-07-26",
+      "body": "can you tell me more about your specific situation, then we may be able to setup a meeting",
+      "seconds_since_outbound": 110,
+      "expect": "human",
+      "note": "Conditional 'may be able to', not an offer of a slot. meeting_offered firing here made the persona accept a meeting that was never offered.",
+      "flags": {}
+    },
+    {
+      "id": "live-06",
+      "source": "live run 2026-07-26",
+      "body": "how about phone call after 30 minutes?",
+      "seconds_since_outbound": 145,
+      "expect": "human",
+      "note": "A real time offer with no am/pm, so the slot regex missed it and the persona kept asking for a human it had already reached.",
+      "flags": { "meeting_offered": true }
+    },
+
+    {
+      "id": "auto-01",
+      "source": "synthetic, modelled on GHL default autoresponders",
+      "body": "Thank you for contacting us! Your message is important to us. Our regular business hours are Mon-Fri 9am-5pm. Reply STOP to opt out. Msg&data rates may apply.",
+      "seconds_since_outbound": 4,
+      "expect": "autoresponder",
+      "flags": {}
+    },
+    {
+      "id": "auto-02",
+      "source": "synthetic",
+      "body": "This is an automated reply. We have received your inquiry and someone will get back to you within 24 hours.",
+      "seconds_since_outbound": 3,
+      "expect": "autoresponder",
+      "flags": { "callback_promised": true }
+    },
+    {
+      "id": "auto-03",
+      "source": "synthetic",
+      "body": "Our office is currently closed. Please do not reply to this message. We will return your call during business hours, Monday through Friday.",
+      "seconds_since_outbound": 2,
+      "expect": "autoresponder",
+      "flags": { "callback_promised": true }
+    },
+    {
+      "id": "auto-04",
+      "source": "synthetic",
+      "body": "Thanks for reaching out to the firm! An intake specialist will review your information and be in touch shortly.",
+      "seconds_since_outbound": 6,
+      "expect": "autoresponder",
+      "note": "Names a role but is still boilerplate. specialist_identified may fire; sender_type is what is asserted.",
+      "flags": { "callback_promised": true }
+    },
+
+    {
+      "id": "bot-01",
+      "source": "synthetic, modelled on qualification chatbots",
+      "body": "Hi there! I'm the virtual assistant for the firm. To better assist you, please answer a few quick questions. First: what type of case do you have? Reply with a number: 1) Auto 2) Slip and fall 3) Other",
+      "seconds_since_outbound": 22,
+      "expect": "ai_agent",
+      "flags": {}
+    },
+    {
+      "id": "bot-02",
+      "source": "synthetic",
+      "body": "Got it. On a scale of 1-10, how severe are your injuries? Also, please confirm the date of the incident in MM/DD/YYYY format.",
+      "seconds_since_outbound": 18,
+      "expect": "ai_agent",
+      "flags": {}
+    },
+    {
+      "id": "bot-03",
+      "source": "synthetic",
+      "body": "I can help you get started. Let's get some basic information first. Please reply with your full name, then your email address.",
+      "seconds_since_outbound": 15,
+      "expect": "ai_agent",
+      "flags": {}
+    },
+    {
+      "id": "bot-04",
+      "source": "synthetic",
+      "body": "Thank you for that information. Based on your answers, you may have a valid claim. You can book a consultation here: https://calendly.com/example-firm/consult",
+      "seconds_since_outbound": 12,
+      "expect": "ai_agent",
+      "note": "Calendar link is a deterministic backstop: booking_link and meeting_offered must both be true regardless of what any model says.",
+      "flags": { "booking_link": true, "meeting_offered": true }
+    },
+
+    {
+      "id": "human-01",
+      "source": "synthetic, modelled on receptionists",
+      "body": "Hi Dana, this is Marcy at the front desk. Sorry for the delay, it's been a morning. Was a police report filed?",
+      "seconds_since_outbound": 1900,
+      "expect": "human",
+      "flags": {}
+    },
+    {
+      "id": "human-02",
+      "source": "synthetic",
+      "body": "let me check with Ruth and text you right back",
+      "seconds_since_outbound": 400,
+      "expect": "human",
+      "flags": { "callback_promised": true }
+    },
+    {
+      "id": "human-03",
+      "source": "synthetic",
+      "body": "Ruth has 4:30pm today or 9:15am tomorrow. Which works?",
+      "seconds_since_outbound": 620,
+      "expect": "human",
+      "note": "Two named slots and a choice. meeting_offered must fire even though no scheduling verb appears.",
+      "flags": { "meeting_offered": true }
+    },
+    {
+      "id": "human-04",
+      "source": "synthetic",
+      "body": "You're all set, confirmed for 4:30pm today with Ruth. She'll call this number.",
+      "seconds_since_outbound": 300,
+      "expect": "human",
+      "note": "A confirmed slot, not merely offered. booking_confirmed separates BOOKED_* from a dangling offer.",
+      "flags": { "booking_confirmed": true, "meeting_offered": true }
+    },
+    {
+      "id": "human-05",
+      "source": "synthetic",
+      "body": "I'm sorry, we don't handle auto injury cases, we only do estate planning. I'd refer you to a personal injury firm.",
+      "seconds_since_outbound": 540,
+      "expect": "human",
+      "note": "Correct behaviour for an unqualified persona. Must terminate DEFLECTED, not read as a failure.",
+      "flags": { "declined_or_referred": true }
+    },
+    {
+      "id": "human-06",
+      "source": "synthetic",
+      "body": "STOP",
+      "seconds_since_outbound": 90,
+      "expect": "human",
+      "note": "Hard terminal. Honoured immediately as OPTED_OUT and excluded from business grading.",
+      "flags": { "opt_out_requested": true }
+    }
+  ]
+}

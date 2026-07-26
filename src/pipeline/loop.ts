@@ -13,11 +13,11 @@ import { composeReply, firstContactMessage, closingMessage } from '../judge/resp
 import { decide, decideOnSilence, type RunView } from '../domain/decide.ts';
 import { isBetterOutcome, isClosed } from '../domain/states.ts';
 import { businessMinutesBetween, rawMinutesBetween } from '../domain/hours.ts';
-import { assessReachability } from '../ingest/capability.ts';
+import { assessReachability, recordSendFailure } from '../ingest/capability.ts';
 import { qualify } from '../domain/qualify.ts';
-import { recordSendFailure } from '../ingest/capability.ts';
+import { buildScorecard } from '../judge/scorecard.ts';
 import type { ChannelAdapter, InboundEvent } from '../channels/types.ts';
-import type { Flags, Run, Target } from '../domain/types.ts';
+import type { Flags, Run, Scorecard, Target } from '../domain/types.ts';
 
 let adapter: ChannelAdapter | null = null;
 
@@ -306,11 +306,13 @@ export function closeRun(run: Run, terminalState: string, reason: string): Run {
 export async function cleanupRun(runId: string): Promise<{ sent: boolean; reason: string }> {
   const run = runs.get(runId);
   if (!run) return { sent: false, reason: 'run not found' };
-  if (run.cleanup_state !== 'pending') return { sent: false, reason: `cleanup_state is ${run.cleanup_state}` };
+  // Checked before the cleanup_state guard: the correct way to honour "stop" is silence,
+  // and that has to be the answer no matter what state the run is already in.
   if (run.terminal_state === 'OPTED_OUT') {
-    runs.patch(runId, { cleanup_state: 'not_needed' });
-    return { sent: false, reason: 'opt-out honoured with silence' };
+    if (run.cleanup_state !== 'not_needed') runs.patch(runId, { cleanup_state: 'not_needed' });
+    return { sent: false, reason: 'opt-out honoured with silence; no closing message sent' };
   }
+  if (run.cleanup_state !== 'pending') return { sent: false, reason: `cleanup_state is ${run.cleanup_state}` };
 
   const target = targets.get(run.target_id)!;
   const persona = personas.get(run.persona_id)!;
@@ -333,6 +335,39 @@ export async function cleanupRun(runId: string): Promise<{ sent: boolean; reason
   return { sent: true, reason: hadBooking ? 'cancelling the booking' : 'closing politely' };
 }
 
+// -------------------------------------------------------------------- grading ---
+
+/**
+ * TERMINAL -> GRADED. Idempotent, so a re-sweep never regrades. Runs after the outcome is
+ * fixed, which is why lifecycle and outcome are separate columns: grading cannot change
+ * what happened.
+ */
+export async function gradeRun(runId: string): Promise<Scorecard | null> {
+  const run = runs.get(runId);
+  if (!run) return null;
+  if (run.state !== 'TERMINAL') return run.scorecard;
+  if (run.scorecard) return run.scorecard;
+
+  const target = targets.get(run.target_id)!;
+  const persona = personas.get(run.persona_id)!;
+  const scorecard = await buildScorecard({
+    run,
+    target,
+    persona,
+    transcript: messages.forRun(run.id),
+  });
+
+  runs.transition(runId, 'GRADED', { scorecard, narrative: scorecard.narrative });
+  logEvent(runId, 'graded', {
+    terminal_state: scorecard.terminal_state,
+    business_grade: scorecard.business_score.grade,
+    harness_pass: scorecard.harness_score.completed_mission,
+    screening: scorecard.screening.verdict,
+    graded_on: scorecard.latency.graded_on,
+  });
+  return scorecard;
+}
+
 // -------------------------------------------------------------------- sweeper ---
 
 export type SweepReport = {
@@ -340,6 +375,7 @@ export type SweepReport = {
   nudged: number;
   closed: number;
   promises_broken: number;
+  graded: number;
   cleaned: number;
   errors: string[];
 };
@@ -354,7 +390,7 @@ export function elapsed(run: Run, target: Target, fromIso: string): { minutes: n
 
 /** Everything the inbound path cannot see: silence, timeouts, broken promises, cleanup. */
 export async function sweep(): Promise<SweepReport> {
-  const report: SweepReport = { sent: 0, nudged: 0, closed: 0, promises_broken: 0, cleaned: 0, errors: [] };
+  const report: SweepReport = { sent: 0, nudged: 0, closed: 0, promises_broken: 0, graded: 0, cleaned: 0, errors: [] };
 
   // 1. Drain due outbound.
   for (const queued of sendQueue.due()) {
@@ -381,7 +417,17 @@ export async function sweep(): Promise<SweepReport> {
     }
   }
 
-  // 3. Politeness pass.
+  // 3. Grade anything that reached a terminal state.
+  for (const run of runs.inStates(['TERMINAL'])) {
+    try {
+      if (await gradeRun(run.id)) report.graded += 1;
+    } catch (err) {
+      report.errors.push(`grade ${run.id}: ${(err as Error).message}`);
+    }
+  }
+
+  // 4. Politeness pass. Every conversation gets a closing message and any booking is
+  //    cancelled — ghosting a receptionist who did their job well is not acceptable.
   for (const run of runs.inStates(['TERMINAL', 'GRADED'])) {
     if (run.cleanup_state !== 'pending') continue;
     const res = await cleanupRun(run.id);

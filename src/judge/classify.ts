@@ -62,8 +62,9 @@ export function heuristicSenderType(
   const scored = { ...hints };
   const gap = secondsSinceOutbound;
   if (gap !== null) {
-    // Nobody reads and types a reply in under ten seconds.
-    if (gap <= 10) scored.autoresponder += 3;
+    // Nobody reads and types a reply in under ten seconds. Weighted so a clear content
+    // signal still wins: "this is Marcy, sorry for the delay" beats a fast clock.
+    if (gap <= 10) scored.autoresponder += 2;
     else if (gap <= 30) scored.ai_agent += 1;
     else if (gap > 900) scored.human += 1;
   }
@@ -78,7 +79,7 @@ export function heuristicSenderType(
   if (topScore === 0) {
     return { sender_type: 'ai_agent', reason: 'no distinguishing signal; scripted automation is the base rate' };
   }
-  return { sender_type: top, reason: `heuristic scores ${JSON.stringify(scored)} (gap ${gap ?? '?'}s)` };
+  return { sender_type: top, reason: `heuristic ${JSON.stringify(scored)} gap=${gap ?? '?'}s` };
 }
 
 export async function classifyInbound(input: ClassifyInput): Promise<Classification> {

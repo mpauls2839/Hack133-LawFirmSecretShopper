@@ -74,7 +74,13 @@ export const OUTCOMES: Record<string, OutcomeDef> = {
   DEFLECTED: {
     rank: 5,
     label: 'Deflected',
-    bucket: 'handled',
+    /**
+     * Engagement-wise this ranks above a bot loop — someone read it and answered. But for
+     * the screening matrix the matter was NOT taken on, which is exactly right: declining
+     * an unqualified inquiry is correct, and declining one you advertise is an expensive
+     * miss. Bucketing it as 'handled' scored a correct decline as wasted time.
+     */
+    bucket: 'not_handled',
     gradable: true,
     blurb: 'Declined or referred elsewhere. Correct for an unqualified persona.',
   },
