@@ -289,7 +289,7 @@ describe('being asked to hold is not a reason to hang up', () => {
 
     // Without the hold request, the same view does terminate.
     const noWait = { ...cls, flags: { ...cls.flags, asked_to_wait: false } };
-    assert.equal(decide(view, noWait).action, 'terminate');
+    assert.equal(decide(view, noWait, null, { keepTalking: false }).action, 'terminate');
   });
 });
 
@@ -344,11 +344,11 @@ describe('patience before asking for a person', () => {
     };
     const cls = { sender_type: 'human' as const, flags: flags(), classifier: 'test', reasons: [] };
     // Hanging up on a question grades the business on an exchange we abandoned.
-    const asked = decideNow(view, cls, 'Can you confirm the date and your address?');
+    const asked = decideNow(view, cls, 'Can you confirm the date and your address?', { keepTalking: false });
     assert.equal(asked.action, 'reply');
     assert.equal(asked.goal, 'answer_question');
     // Same view, nothing asked: settling is correct.
-    assert.equal(decideNow(view, cls, 'Ok.').action, 'terminate');
+    assert.equal(decideNow(view, cls, 'Ok.', { keepTalking: false }).action, 'terminate');
   });
 });
 
@@ -395,5 +395,54 @@ describe('answering questions the brief never covered', () => {
       assert.equal(r.remember, undefined, `a refusal must not be stored as a fact: ${q}`);
       assert.doesNotMatch(r.answer, /\d{3,}/, `refusal must not contain digits: ${q}`);
     }
+  });
+});
+
+/**
+ * The run stays in the conversation while the business is still talking, but never past
+ * someone asking us to stop.
+ */
+describe('keep talking', () => {
+  const engaged = {
+    turns: 6, inboundCount: 6, machineInbound: 0, humanSeen: true, turnsSinceHuman: 4,
+    priceSeen: true, meetingOffered: false, specialistSeen: true, t0: new Date().toISOString(),
+  };
+  const human = (body: string) => ({
+    sender_type: 'human' as const, flags: readIn(body, []).flags, classifier: 'test', reasons: [],
+  });
+
+  test('does not settle for HUMAN_* while the other side is still replying', () => {
+    const d = decideNow(engaged, human('Ok.'), 'Ok.', { keepTalking: true });
+    assert.equal(d.action, 'reply', 'keepTalking must not hang up on a live human');
+  });
+
+  test('an opt-out still ends the run immediately', () => {
+    const d = decideNow(engaged, human('STOP'), 'STOP', { keepTalking: true });
+    assert.equal(d.action, 'terminate');
+    assert.equal(d.terminal_state, 'OPTED_OUT');
+  });
+
+  test('a confirmed booking and a decline still end the run', () => {
+    const booked = { ...human('You are booked for 2pm tomorrow.'), flags: { ...readIn('You are booked for 2pm tomorrow.', []).flags, booking_confirmed: true } };
+    assert.equal(decideNow(engaged, booked, null, { keepTalking: true }).action, 'terminate');
+    const declined = { ...human('We do not handle these.'), flags: { ...readIn('We do not handle these.', []).flags, declined_or_referred: true } };
+    assert.equal(decideNow(engaged, declined, null, { keepTalking: true }).terminal_state, 'DEFLECTED');
+  });
+});
+
+describe('prompt context', () => {
+  test('the whole conversation goes into the prompt, oldest first', async () => {
+    const { renderTranscript } = await import('../src/judge/respond.ts');
+    const msgs = Array.from({ length: 30 }, (_, i) => ({ direction: i % 2 ? 'in' : 'out', body: `msg ${i}` }));
+    const out = renderTranscript(msgs);
+    // Every turn present, not just a recent window — consistency depends on the early ones.
+    assert.match(out, /me: msg 0/);
+    assert.match(out, /them: msg 29/);
+    assert.equal(out.split('\n').length, 30);
+    // Pathological length drops the oldest turns and says so, rather than truncating a line.
+    const huge = Array.from({ length: 400 }, (_, i) => ({ direction: 'in', body: 'x'.repeat(200) + ` ${i}` }));
+    const capped = renderTranscript(huge);
+    assert.ok(capped.length < 30_000, 'history budget not applied');
+    assert.match(capped, /earlier turns omitted/);
   });
 });

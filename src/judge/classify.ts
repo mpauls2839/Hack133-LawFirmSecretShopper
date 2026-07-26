@@ -10,6 +10,7 @@
 import { config } from '../config.ts';
 import { chatJson } from './llm.ts';
 import { readInbound } from './deterministic.ts';
+import { renderTranscript } from './respond.ts';
 import type { Classification, Flags, SenderType } from '../domain/types.ts';
 
 export type ClassifyInput = {
@@ -20,6 +21,14 @@ export type ClassifyInput = {
   secondsSinceOutbound: number | null;
   /** What we last asked, so "did they answer the question" is answerable. */
   lastOutbound: string | null;
+  /**
+   * The whole conversation so far, oldest first.
+   *
+   * A reply cannot be classified from itself: "yes, 2pm works" is a human confirming a slot
+   * or a bot echoing a template depending entirely on what came before it. Withholding the
+   * history made the classifier guess at exactly the moments that matter most.
+   */
+  transcript?: Array<{ direction: string; body: string }>;
 };
 
 type ModelRead = {
@@ -97,16 +106,29 @@ export async function classifyInbound(input: ClassifyInput): Promise<Classificat
   const flags: Flags = det.flags;
   const reasons = [...det.reasons];
 
-  const model = await chatJson<ModelRead>({
-    model: config.llm.fastModel,
-    tag: 'tier1_classify',
-    maxTokens: 300,
-    system: SYSTEM,
-    user:
-      `Customer's last message: ${input.lastOutbound ?? '(none)'}\n\n` +
-      `Business reply: ${input.body}\n\n` +
-      `Seconds between them: ${input.secondsSinceOutbound ?? 'unknown'}`,
-  });
+  /**
+   * Don't pay for a verdict that is already overridden.
+   *
+   * Deterministic checks beat model output (spec 6), and a duplicate body forces
+   * `autoresponder` whatever the model says — so calling the model there bought a result
+   * that was discarded a few lines later, and charged a round trip of latency for it.
+   * `question_answered` is forced false for an autoresponder anyway, so nothing the model
+   * would have contributed survives the override.
+   */
+  const model = det.forcedSenderType === 'autoresponder'
+    ? null
+    : await chatJson<ModelRead>({
+        model: config.llm.fastModel,
+        tag: 'tier1_classify',
+        maxTokens: 300,
+        system: SYSTEM,
+        user:
+          `Conversation so far (me = the customer, them = the business):\n` +
+          `${renderTranscript(input.transcript ?? []) || '(nothing yet)'}\n\n` +
+          `Customer's last message: ${input.lastOutbound ?? '(none)'}\n\n` +
+          `Business reply to classify: ${input.body}\n\n` +
+          `Seconds between them: ${input.secondsSinceOutbound ?? 'unknown'}`,
+      });
 
   let senderType: Exclude<SenderType, 'persona'>;
   let classifier: string;

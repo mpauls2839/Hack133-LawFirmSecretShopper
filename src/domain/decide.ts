@@ -56,8 +56,20 @@ const HUMAN_PURSUIT_TURNS = 2;
  */
 const ESCALATION_FLOOR_INBOUND = 10;
 
-export function decide(view: RunView, cls: Classification, lastInbound: string | null = null): Decision {
+/**
+ * Policy switches. Passed in rather than read from config inside, so the decision function
+ * stays pure and a test can exercise both settings in one process.
+ */
+export type DecideOptions = { keepTalking?: boolean };
+
+export function decide(
+  view: RunView,
+  cls: Classification,
+  lastInbound: string | null = null,
+  opts: DecideOptions = {},
+): Decision {
   const f = cls.flags;
+  const keepTalking = opts.keepTalking ?? config.loop.keepTalking;
 
   if (f.opt_out_requested) {
     return {
@@ -129,7 +141,13 @@ export function decide(view: RunView, cls: Classification, lastInbound: string |
    * terminating on a question leaves the business mid-intake and grades them on an exchange
    * we abandoned. Answer first; settle when they stop asking.
    */
-  if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS && !bookingInPlay && !askedUsSomething(lastInbound)) {
+  if (
+    !keepTalking &&
+    humanSeen &&
+    turnsSinceHuman >= HUMAN_PURSUIT_TURNS &&
+    !bookingInPlay &&
+    !askedUsSomething(lastInbound)
+  ) {
     const specialist = f.specialist_identified || view.specialistSeen;
     return {
       action: 'terminate',
@@ -152,10 +170,6 @@ function bestHumanOutcome(specialist: boolean): string {
   return specialist ? 'HUMAN_SPECIALIST' : 'HUMAN_GENERIC';
 }
 
-/**
- * Did they ask us something? A question mark is the cheap signal, but intake staff
- * routinely ask without one ("tell me what happened", "let me know the date").
- */
 /**
  * Words that name a detail an intake desk collects. Used only to read telegraphic requests.
  */

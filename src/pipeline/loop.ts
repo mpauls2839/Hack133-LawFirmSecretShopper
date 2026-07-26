@@ -179,6 +179,8 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
     const persona = personas.get(run.persona_id)!;
 
     const priorInbound = messages.inboundBodies(run.id);
+    // Read before the new message is stored, so it is not duplicated in its own context.
+    const priorTranscript = messages.forRun(run.id);
     const lastOut = messages.lastOutbound(run.id);
     const secondsSinceOutbound = lastOut
       ? Math.max(0, Math.round((new Date(event.ts).getTime() - new Date(lastOut.ts).getTime()) / 1000))
@@ -202,6 +204,7 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
       priorInbound,
       secondsSinceOutbound,
       lastOutbound: lastOut?.body ?? null,
+      transcript: priorTranscript,
     });
 
     // Persist what we perceived, on the message it belongs to.

@@ -36,18 +36,26 @@ export const config = {
    * Inside a Maritime agent the platform injects OPENAI_BASE_URL + OPENAI_API_KEY
    * (`mllm_<agentId>_…`), so those win. MARITIME_* are the local-dev fallback.
    *
-   * That proxy is an OpenAI passthrough: gemma-4-12b / glm-5.2 / deepseek-v4 all 404.
-   * Verified 2026-07-26 from inside a container — gpt-4o-mini, gpt-4.1-mini, gpt-5-mini
-   * and gpt-5 answer. Note gpt-5 rejects `max_tokens` and requires
-   * `max_completion_tokens`, which judge/llm.ts handles.
+   * That proxy is an OpenAI passthrough: gemma-4-12b / glm-5.2 / deepseek-v4 all 404, and
+   * no Anthropic model is offered — a deployed agent asked directly reports it runs as
+   * `openai/gpt-5.4` and lists no Claude ids. Note the gpt-5 family rejects `max_tokens`
+   * and requires `max_completion_tokens`, which judge/llm.ts handles.
    */
   llm: {
     baseUrl:
       str(process.env.OPENAI_BASE_URL) ||
       str(process.env.MARITIME_LLM_BASE, 'https://api.maritime.sh/api/llm/v1'),
     apiKey: str(process.env.OPENAI_API_KEY) || str(process.env.MARITIME_TOKEN),
-    fastModel: str(process.env.JUDGE_FAST_MODEL, 'gpt-4o-mini'),
-    deepModel: str(process.env.JUDGE_DEEP_MODEL, 'gpt-5'),
+    /**
+     * Model ids as the Maritime proxy names them, provider-prefixed.
+     *
+     * `openai/gpt-5.4` is what the proxy actually serves — confirmed by asking a deployed
+     * agent, not assumed. No Anthropic models are offered there, so pointing at one would
+     * 404 at the worst possible moment. Override both when running against a provider
+     * directly, where the ids are unprefixed.
+     */
+    fastModel: str(process.env.JUDGE_FAST_MODEL, 'openai/gpt-5.4'),
+    deepModel: str(process.env.JUDGE_DEEP_MODEL, 'openai/gpt-5.4'),
     timeoutMs: int(process.env.LLM_TIMEOUT_MS, 30_000),
     /** 'auto' uses the HTTP driver when a key exists, else the offline stub. */
     driver: (str(process.env.JUDGE_DRIVER, 'auto')) as 'auto' | 'http' | 'stub',
@@ -82,7 +90,20 @@ export const config = {
      * Must stay above ESCALATION_FLOOR_INBOUND, or the cap fires before the persona is ever
      * allowed to ask for a person and the escalation path becomes unreachable.
      */
-    maxTurns: int(process.env.MAX_TURNS, 16),
+    maxTurns: int(process.env.MAX_TURNS, 40),
+
+    /**
+     * Stay in the conversation while the other side is still talking.
+     *
+     * Reaching a human is the harness's objective, so the loop used to close a few turns
+     * after one appeared. In a live demo that reads as the persona hanging up mid-intake,
+     * and it also cuts off the part of the exchange worth watching. With this on, the
+     * "good enough, stop here" terminations are suppressed and the run ends on something
+     * real instead: a confirmed booking, a decline, an opt-out, silence, or the turn cap.
+     *
+     * OPTED_OUT is never suppressed. Nothing overrides someone asking us to stop.
+     */
+    keepTalking: bool(process.env.KEEP_TALKING, true),
     wallClockHours: int(process.env.WALL_CLOCK_HOURS, 72),
     replyDelayMinMs: int(process.env.REPLY_DELAY_MIN_MS, 2 * 60_000),
     replyDelayMaxMs: int(process.env.REPLY_DELAY_MAX_MS, 5 * 60_000),

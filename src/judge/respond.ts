@@ -82,6 +82,71 @@ const TEMPLATES: Record<Goal, (p: Persona) => string> = {
 const firstLine = (text: string): string => (text.split(/(?<=[.?!])\s/)[0] ?? text).trim();
 
 /**
+ * Second and third phrasings for the goals that legitimately come round again.
+ *
+ * Sending an identical line twice is the clearest bot tell there is, and with the run now
+ * staying open while the business keeps talking, goals repeat as a matter of course.
+ */
+const GOAL_VARIANTS: Partial<Record<Goal, string[]>> = {
+  seek_booking: [
+    `Would later today or tomorrow morning be easier for a quick call?`,
+    `Happy to work around you — what's the soonest someone could talk?`,
+    `Any slot this week works for me, I just want to get it moving.`,
+  ],
+  ask_cost: [
+    `Sorry to ask again about money — is there anything I'd owe up front?`,
+    `Just so I know: is the first conversation free, or is there a fee?`,
+  ],
+  seek_specialist: [
+    `Is there someone there who deals with car accident claims specifically?`,
+    `Happy to speak to whoever handles these — who would that be?`,
+  ],
+  answer_question: [
+    `Sorry, not sure which detail you need — tell me which and I'll send it right over.`,
+    `Let me know exactly what you're missing and I'll get it to you.`,
+  ],
+  acknowledge_wait: [`No problem, I'll wait. Thanks.`, `Sure, take your time.`],
+  confirm_booking: [
+    `That works for me — please put me down for the earliest time you have.`,
+    `Yes, book me in for that. I'll keep it short.`,
+  ],
+};
+
+function variantsFor(goal: Goal, persona: Persona): string[] {
+  const pool = [TEMPLATES[goal](persona), ...(GOAL_VARIANTS[goal] ?? [])];
+  // Escalation is the one goal whose whole point is to be said a different way each time.
+  return goal === 'escalate_to_human' ? ESCALATION_VARIANTS : pool;
+}
+
+/** How much conversation history goes into a prompt before the oldest turns are dropped. */
+const HISTORY_BUDGET_CHARS = 24_000;
+
+/**
+ * The whole conversation, oldest first, in the prompt.
+ *
+ * It used to send the last eight messages. That is enough to answer the message in front of
+ * you and not enough to stay consistent: a detail given on turn two was invisible by turn
+ * six, so the persona contradicted itself and the business started reacting to the
+ * inconsistency rather than doing its job. Text intake runs are short — a whole run is a few
+ * thousand characters — so the budget is a guard against pathology, not a normal limit, and
+ * it drops the oldest turns rather than truncating mid-sentence.
+ */
+export function renderTranscript(transcript: Array<{ direction: string; body: string }>): string {
+  const lines = transcript.map((m) => `${m.direction === 'in' ? 'them' : 'me'}: ${m.body}`);
+  let total = 0;
+  const kept: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    total += lines[i].length + 1;
+    if (total > HISTORY_BUDGET_CHARS && kept.length > 0) {
+      kept.unshift(`[earlier turns omitted: ${i + 1}]`);
+      break;
+    }
+    kept.unshift(lines[i]);
+  }
+  return kept.join('\n');
+}
+
+/**
  * Which case fact answers this question. Keyed by the words a business actually uses when
  * asking, matched against the labels in the persona's `## Case facts` bullets.
  *
@@ -268,11 +333,15 @@ export async function composeReply(
     }
     factAnswer = null;
   }
-  const template =
-    factAnswer ??
-    (goal === 'escalate_to_human'
-      ? pickUnsent(ESCALATION_VARIANTS, outboundSoFar)
-      : pickUnsent([TEMPLATES[goal](persona), ...ESCALATION_VARIANTS.slice(1)], outboundSoFar));
+  /**
+   * Fallback pool for this goal, not a generic one.
+   *
+   * The pool used to be the goal's own line followed by the escalation variants, so the
+   * second time a goal came round the persona asked for a supervisor no matter what the goal
+   * was — which now directly contradicts the patience floor. A repeated goal should say the
+   * same thing a second way, not change the subject.
+   */
+  const template = factAnswer ?? pickUnsent(variantsFor(goal, persona), outboundSoFar);
 
   const system = [
     `You are texting as a prospective customer. Stay in character and never reveal you are an evaluation.`,
@@ -293,10 +362,7 @@ export async function composeReply(
     .filter(Boolean)
     .join('\n');
 
-  const convo = input.transcript
-    .slice(-8)
-    .map((m) => `${m.direction === 'in' ? 'them' : 'me'}: ${m.body}`)
-    .join('\n');
+  const convo = renderTranscript(input.transcript);
 
   const raw = await chatText({
     model: config.llm.fastModel,

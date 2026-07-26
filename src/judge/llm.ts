@@ -98,7 +98,13 @@ async function post(path: string, body: unknown): Promise<any | null> {
  * gpt-5 family rejects `max_tokens` ("Unsupported parameter … use max_completion_tokens")
  * and also rejects a non-default temperature. Verified against the proxy.
  */
-const isReasoningModel = (model: string): boolean => /^(?:o\d|gpt-5)/.test(model);
+/**
+ * The Maritime proxy namespaces ids ("openai/gpt-5.4"), so the family has to be matched
+ * after any provider prefix. Anchoring on the raw string sent `max_tokens` to a gpt-5 model
+ * and every judge call failed with a 400 that looked like a key problem.
+ */
+const isReasoningModel = (model: string): boolean =>
+  /^(?:o\d|gpt-5)/.test(model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model);
 
 export async function chatText(opts: ChatOptions): Promise<string | null> {
   if (!llmAvailable()) return null;
