@@ -23,7 +23,13 @@ export const config = {
   /** The port declared to Maritime at create time, which is what public traffic hits. */
   exposedPort: int(process.env.EXPOSED_PORT, 3000),
   dbPath: process.env.DB_PATH ?? resolve(ROOT, 'data/intake-grader.db'),
-  routerPublicUrl: process.env.ROUTER_PUBLIC_URL ?? '',
+  routerPublicUrl: str(process.env.ROUTER_PUBLIC_URL),
+  /**
+   * Shared secret for inbound webhooks. GoHighLevel workflow actions cannot sign their
+   * requests, so the secret travels in the URL or an x-webhook-secret header. Unset means
+   * the endpoint is open, which is acceptable locally and not on a public router.
+   */
+  webhookSecret: str(process.env.WEBHOOK_SECRET),
 
   // ---- judge -------------------------------------------------------------
   /**

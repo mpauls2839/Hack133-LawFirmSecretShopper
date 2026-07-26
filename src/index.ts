@@ -17,7 +17,7 @@ import { openRun, handleInbound, sweep, useAdapter, checkSendGate, cleanupRun, t
 import { judgeStatus, listModels } from './judge/llm.ts';
 import { runCalibration } from './judge/calibrate.ts';
 import { OUTCOMES } from './domain/states.ts';
-import { ghlAdapter, bindRun, ensureContact, runIdForConversation } from './channels/ghl.ts';
+import { ghlAdapter, bindRun, ensureContact, runForProviderIds, parseGhlWebhook, markSeen } from './channels/ghl.ts';
 import { mockAdapter } from './channels/mock.ts';
 import type { InboundEvent } from './channels/types.ts';
 
@@ -30,15 +30,36 @@ const persona = seedPersona();
 const adapter = config.channel.default === 'ghl' && ghlAdapter.available() ? ghlAdapter : mockAdapter;
 useAdapter(adapter);
 
-/** One entry point for inbound, whatever the transport. */
-async function sink(event: InboundEvent): Promise<void> {
-  const runId = event.run_id ?? runIdForConversation(event.provider_id);
+/**
+ * One entry point for inbound, whatever the transport.
+ *
+ * Routing is by contact or conversation id, never by message id — a message id identifies
+ * the message, not the run it belongs to, and looking a run up by it always fails.
+ */
+async function sink(
+  event: InboundEvent & { contact_id?: string | null; conversation_id?: string | null },
+): Promise<{ handled: boolean; reason: string; run_id: string | null }> {
+  const runId =
+    event.run_id ??
+    runForProviderIds({ conversationId: event.conversation_id, contactId: event.contact_id ?? event.from });
+
   if (!runId) {
-    logEvent(null, 'inbound_unrouted', { provider: event.provider, provider_id: event.provider_id });
-    return;
+    logEvent(null, 'inbound_unrouted', {
+      provider: event.provider,
+      provider_id: event.provider_id,
+      contact_id: event.contact_id ?? event.from,
+      conversation_id: event.conversation_id ?? null,
+    });
+    return { handled: false, reason: 'no run is bound to this contact or conversation', run_id: null };
   }
   const res = await handleInbound({ ...event, run_id: runId });
-  logEvent(runId, 'inbound_result', { handled: res.handled, reason: res.reason, decision: res.decision ?? null });
+  logEvent(runId, 'inbound_result', {
+    handled: res.handled,
+    reason: res.reason,
+    decision: res.decision ?? null,
+    source: event.run_id ? 'poll' : 'webhook',
+  });
+  return { handled: res.handled, reason: res.reason, run_id: runId };
 }
 
 adapter.start?.(sink);
@@ -53,6 +74,12 @@ app.get('/api/health', (_req, res) => {
     live_sends: config.channel.allowLiveSends,
     sends_halted: sendsHalted(),
     allowlist: loadAllowlist(),
+    webhook: {
+      path: '/api/inbound/ghl',
+      url: config.routerPublicUrl ? config.routerPublicUrl.replace(/\/$/, '') + '/api/inbound/ghl' : null,
+      secret_required: !!config.webhookSecret,
+      poll_backstop_ms: config.channel.ghl.pollMs,
+    },
     persona: { id: persona.id, name: persona.name, need_tags: persona.need_tags },
     runs: runs.list().length,
   });
@@ -159,29 +186,70 @@ app.post('/api/runs/:id/cleanup', async (req, res) => {
 // ------------------------------------------------------------------- inbound ---
 
 /**
- * Webhook receiver. Dedupe happens in the DB on (provider, provider_id), so a replayed
- * delivery is safe and we always answer 200 — a 500 makes the provider retry forever.
+ * Webhook receiver.
+ *
+ * Always answers 2xx once the payload is authenticated. Dedupe on (provider, provider_id)
+ * makes a replayed delivery harmless, and a 500 would make the provider retry the same bad
+ * payload indefinitely — so parse failures are logged and acknowledged, not errored.
+ *
+ * GoHighLevel workflow webhooks cannot sign their requests, so the shared secret travels
+ * in the URL or a header. Without WEBHOOK_SECRET set the endpoint is open, which is fine
+ * locally and not fine on a public router; the health endpoint reports which it is.
  */
+function webhookAuthorized(req: express.Request): boolean {
+  const expected = config.webhookSecret;
+  if (!expected) return true;
+  const supplied =
+    (req.get('x-webhook-secret') ?? '') ||
+    String(req.query.secret ?? '') ||
+    String((req.body ?? {}).secret ?? '');
+  // Length-first comparison avoids leaking the secret's length through timing.
+  return supplied.length === expected.length && supplied === expected;
+}
+
 app.post('/api/inbound/:provider', async (req, res) => {
-  const body = req.body ?? {};
-  const event: InboundEvent = {
-    provider: req.params.provider,
-    provider_id: String(body.messageId ?? body.id ?? body.provider_id ?? ''),
-    from: String(body.from ?? body.contactId ?? ''),
-    to: String(body.to ?? ''),
-    body: String(body.message ?? body.body ?? ''),
-    ts: String(body.dateAdded ?? body.ts ?? new Date().toISOString()),
-    run_id: body.run_id,
-  };
-  if (!event.provider_id || !event.body) {
-    return res.status(202).json({ ok: true, ignored: 'missing message id or body' });
+  if (!webhookAuthorized(req)) {
+    logEvent(null, 'webhook_rejected', { provider: req.params.provider, reason: 'bad or missing secret' });
+    return res.status(401).json({ ok: false, error: 'bad or missing webhook secret' });
   }
+
+  const payload = (req.body ?? {}) as Record<string, any>;
+  logEvent(null, 'webhook_received', { provider: req.params.provider, keys: Object.keys(payload).slice(0, 25) });
+
   try {
-    await sink(event);
+    if (req.params.provider === 'ghl') {
+      const { event, skip } = parseGhlWebhook(payload);
+      if (!event) {
+        logEvent(null, 'webhook_skipped', { reason: skip, keys: Object.keys(payload).slice(0, 25) });
+        return res.status(202).json({ ok: true, ignored: skip });
+      }
+      markSeen(event.provider_id);
+      const result = await sink(event);
+      return res.json({ ok: true, ...result });
+    }
+
+    // Generic shape, used by tests and by anything that posts our own format.
+    const event: InboundEvent & { contact_id?: string | null; conversation_id?: string | null } = {
+      provider: req.params.provider,
+      provider_id: String(payload.messageId ?? payload.id ?? payload.provider_id ?? ''),
+      from: String(payload.from ?? payload.contactId ?? ''),
+      to: String(payload.to ?? ''),
+      body: String(payload.message ?? payload.body ?? ''),
+      ts: String(payload.dateAdded ?? payload.ts ?? new Date().toISOString()),
+      run_id: payload.run_id,
+      contact_id: payload.contactId ?? payload.contact_id ?? null,
+      conversation_id: payload.conversationId ?? payload.conversation_id ?? null,
+    };
+    if (!event.provider_id || !event.body) {
+      return res.status(202).json({ ok: true, ignored: 'missing message id or body' });
+    }
+    const result = await sink(event);
+    res.json({ ok: true, ...result });
   } catch (err) {
-    logEvent(event.run_id ?? null, 'inbound_error', { error: (err as Error).message });
+    logEvent(null, 'inbound_error', { provider: req.params.provider, error: (err as Error).message });
+    // Acknowledged deliberately: the event is logged, and a retry storm helps nobody.
+    res.status(202).json({ ok: false, error: (err as Error).message });
   }
-  res.json({ ok: true });
 });
 
 // ------------------------------------------------------------------- control ---

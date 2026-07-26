@@ -13,6 +13,7 @@
  */
 import { config } from '../config.ts';
 import { logEvent } from '../db/index.ts';
+import { runs } from '../db/repo.ts';
 import type { ChannelAdapter, InboundEvent, InboundSink, SendArgs, SendResult } from './types.ts';
 
 const CONVERSATIONS_VERSION = '2021-04-15';
@@ -58,20 +59,31 @@ export type GhlRunBinding = {
   conversation_id: string | null;
 };
 
-/** run_id -> GHL ids. Persisted on the run by the caller; this is the hot cache. */
-const bindings = new Map<string, GhlRunBinding>();
-
+/**
+ * Bindings live on the run row, not in a Map. The router is long-lived and always-on, and
+ * an in-memory binding means a restart orphans every conversation in flight — inbound
+ * would arrive with no run to attach it to and be silently dropped.
+ */
 export function bindRun(runId: string, binding: GhlRunBinding): void {
-  bindings.set(runId, binding);
+  runs.patch(runId, {
+    provider: 'ghl',
+    provider_contact_id: binding.contact_id,
+    provider_conversation_id: binding.conversation_id,
+  });
 }
 
 export function bindingFor(runId: string): GhlRunBinding | null {
-  return bindings.get(runId) ?? null;
+  const run = runs.get(runId);
+  if (!run?.provider_contact_id) return null;
+  return { contact_id: run.provider_contact_id, conversation_id: run.provider_conversation_id };
 }
 
-export function runIdForConversation(conversationId: string): string | null {
-  for (const [runId, b] of bindings) if (b.conversation_id === conversationId) return runId;
-  return null;
+/** Resolve an inbound event to a run by whichever id the provider gave us. */
+export function runForProviderIds(ids: {
+  conversationId?: string | null;
+  contactId?: string | null;
+}): string | null {
+  return runs.byProviderIds(ids)?.id ?? null;
 }
 
 /**
@@ -130,7 +142,7 @@ export const ghlAdapter: ChannelAdapter = {
   },
 
   async send(args: SendArgs): Promise<SendResult> {
-    const binding = bindings.get(args.run.id);
+    const binding = bindingFor(args.run.id);
     if (!binding?.contact_id) {
       return { ok: false, error: `run ${args.run.id} has no GHL contact binding`, retryable: false };
     }
@@ -152,19 +164,24 @@ export const ghlAdapter: ChannelAdapter = {
 
     const conversationId = res.body?.conversationId ?? binding.conversation_id;
     if (conversationId && conversationId !== binding.conversation_id) {
-      bindings.set(args.run.id, { ...binding, conversation_id: conversationId });
+      bindRun(args.run.id, { ...binding, conversation_id: conversationId });
     }
     return { ok: true, provider_id: res.body?.messageId ?? null, note: `conversation ${conversationId}` };
   },
 
   /**
-   * Polls only the conversations bound to active runs. Webhooks come later; polling
-   * first is the spec's day-one choice and it avoids needing a public URL.
+   * Polls only the conversations bound to still-open runs. This is the backstop now that
+   * webhooks are wired: a missed or misconfigured webhook must not silently stall a run,
+   * and dedupe on (provider, provider_id) means both paths can deliver the same message
+   * safely. Set GHL_POLL_MS=0 to run webhook-only.
    */
   start(sink: InboundSink): void {
-    if (pollTimer) return;
+    if (pollTimer || config.channel.ghl.pollMs <= 0) return;
     const tick = async (): Promise<void> => {
-      for (const [runId, binding] of [...bindings]) {
+      for (const run of runs.active()) {
+        if (run.provider !== 'ghl') continue;
+        const runId = run.id;
+        const binding = { contact_id: run.provider_contact_id!, conversation_id: run.provider_conversation_id };
         if (!binding.conversation_id) continue;
         try {
           const res = await api('GET', `/conversations/${binding.conversation_id}/messages?limit=20`, {
@@ -205,6 +222,70 @@ export const ghlAdapter: ChannelAdapter = {
     pollTimer = null;
   },
 };
+
+/**
+ * Parses a GoHighLevel workflow webhook into our inbound shape.
+ *
+ * GHL has no webhook-registration API for a Private Integration Token, so the hook is a
+ * Workflow action configured in the UI, and its payload shape varies by trigger and by how
+ * the action is set up — fields appear at the top level, under `message`, or under
+ * `customData`. Rather than assume one shape, every known location is checked.
+ *
+ * Returns a reason instead of throwing: a webhook we cannot parse must still be answered
+ * 200 and logged, because a 500 makes the provider retry the same bad payload forever.
+ */
+export function parseGhlWebhook(payload: Record<string, any>): {
+  event?: Omit<InboundEvent, 'run_id'> & { conversation_id: string | null; contact_id: string | null };
+  skip?: string;
+} {
+  const msg = payload.message ?? payload.Message ?? payload.customData ?? {};
+  const pick = (...keys: string[]): string | null => {
+    for (const key of keys) {
+      for (const source of [payload, msg]) {
+        const value = source?.[key];
+        if (value !== undefined && value !== null && String(value).trim() !== '') return String(value).trim();
+      }
+    }
+    return null;
+  };
+
+  const body = pick('body', 'message_body', 'messageBody', 'text', 'sms_body');
+  const providerId = pick('messageId', 'message_id', 'id', 'msgId');
+  const contactId = pick('contactId', 'contact_id');
+  const conversationId = pick('conversationId', 'conversation_id');
+  const direction = (pick('direction', 'messageDirection') ?? '').toLowerCase();
+  const type = (pick('messageType', 'message_type', 'type') ?? '').toLowerCase();
+
+  // Our own outbound comes back through the same workflow. Ingesting it would have the
+  // persona replying to itself, so anything not clearly inbound is dropped.
+  if (direction && direction !== 'inbound') return { skip: `direction is ${direction}` };
+  if (!direction && type && /outbound/.test(type)) return { skip: `type is ${type}` };
+  if (!body) return { skip: 'no message body in payload' };
+  if (!providerId) return { skip: 'no message id to dedupe on' };
+  if (!contactId && !conversationId) return { skip: 'no contact or conversation id to route by' };
+
+  return {
+    event: {
+      provider: 'ghl',
+      provider_id: providerId,
+      from: contactId ?? conversationId ?? 'unknown',
+      to: config.channel.ghl.fromNumber,
+      body,
+      ts: pick('dateAdded', 'date_added', 'timestamp', 'createdAt') ?? new Date().toISOString(),
+      contact_id: contactId,
+      conversation_id: conversationId,
+    },
+  };
+}
+
+/**
+ * Marks a message id as already delivered. Called when the webhook path handles an event
+ * so the poller does not re-deliver it. Dedupe in the database is the real guarantee; this
+ * just avoids the wasted round trip.
+ */
+export function markSeen(providerId: string): void {
+  seen.add(providerId);
+}
 
 /**
  * Marks history as already-seen so a fresh run does not ingest a conversation's backlog.

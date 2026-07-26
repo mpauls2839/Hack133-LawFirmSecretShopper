@@ -249,6 +249,9 @@ function hydrateRun(row: any): Run {
     qualification_reason: row.qualification_reason,
     agent_name: row.agent_name,
     live: !!row.live,
+    provider: row.provider,
+    provider_contact_id: row.provider_contact_id,
+    provider_conversation_id: row.provider_conversation_id,
     state: row.state,
     terminal_state: row.terminal_state,
     terminal_reason: row.terminal_reason,
@@ -280,6 +283,9 @@ export type RunPatch = Partial<{
   channel_address: string | null;
   agent_name: string | null;
   live: boolean;
+  provider: string | null;
+  provider_contact_id: string | null;
+  provider_conversation_id: string | null;
   terminal_state: string | null;
   terminal_reason: string | null;
   t0: string | null;
@@ -376,6 +382,36 @@ export const runs = {
 
   list(): Run[] {
     return (db().prepare('SELECT * FROM runs ORDER BY created_at DESC').all() as any[]).map(hydrateRun);
+  },
+
+  /**
+   * Inbound routing. A webhook knows a contact or a conversation, never a run id, so the
+   * binding has to be resolvable from the database rather than from process memory —
+   * otherwise a router restart orphans every conversation already in flight.
+   *
+   * Open runs win over closed ones: the same business texted in a later cycle should not
+   * resolve to last week's finished run.
+   */
+  byProviderIds(ids: { conversationId?: string | null; contactId?: string | null }): Run | null {
+    const openFirst = "ORDER BY CASE WHEN state IN ('TERMINAL','GRADED','CLEANED_UP') THEN 1 ELSE 0 END, created_at DESC";
+    if (ids.conversationId) {
+      const row = db()
+        .prepare(`SELECT * FROM runs WHERE provider_conversation_id = ? ${openFirst} LIMIT 1`)
+        .get(ids.conversationId) as any;
+      if (row) return hydrateRun(row);
+    }
+    if (ids.contactId) {
+      const row = db()
+        .prepare(`SELECT * FROM runs WHERE provider_contact_id = ? ${openFirst} LIMIT 1`)
+        .get(ids.contactId) as any;
+      if (row) return hydrateRun(row);
+    }
+    return null;
+  },
+
+  /** Runs still capable of receiving inbound, used to scope polling. */
+  active(): Run[] {
+    return runs.inStates(['CREATED', 'CONTACTED', 'AWAITING_REPLY', 'IN_CONVERSATION']);
   },
 
   inStates(states: string[]): Run[] {

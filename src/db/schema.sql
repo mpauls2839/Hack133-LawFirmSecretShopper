@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS runs (
   qualification_reason TEXT,
   agent_name          TEXT,
   live                INTEGER NOT NULL DEFAULT 0,    -- 1 only when a real send left the box
+  -- Transport correlation, persisted rather than held in memory: the router is long-lived
+  -- and a restart must not orphan an open conversation. This is the shared-number
+  -- fallback's routing key, since per-agent identities are unavailable.
+  provider            TEXT,
+  provider_contact_id TEXT,
+  provider_conversation_id TEXT,
   state               TEXT NOT NULL,                 -- lifecycle: CREATED..CLEANED_UP
   terminal_state      TEXT,                          -- outcome ladder, survives GRADED/CLEANED_UP
   terminal_reason     TEXT,
@@ -103,6 +109,9 @@ CREATE TABLE IF NOT EXISTS runs (
 -- Guardrail as a constraint, not a convention: one open inquiry per business per cycle.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_per_target_cycle ON runs(target_id, cycle);
 CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
+-- Inbound routing lookups. A webhook arrives knowing a contact or conversation, not a run.
+CREATE INDEX IF NOT EXISTS idx_runs_provider_contact ON runs(provider_contact_id);
+CREATE INDEX IF NOT EXISTS idx_runs_provider_conversation ON runs(provider_conversation_id);
 
 CREATE TABLE IF NOT EXISTS messages (
   id           TEXT PRIMARY KEY,
