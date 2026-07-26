@@ -3,6 +3,7 @@ import { DEFAULT_ANTHROPIC_BASE_URL } from "../config/env.js";
 import {
   StubTurnDecider,
   classifyBookingUrls,
+  classifyDeclineMessage,
   type TurnDecider,
   type TurnDecision,
   type TurnDecisionInput,
@@ -26,18 +27,30 @@ abstract class LlmTurnDecider implements TurnDecider {
 
   async decide(input: TurnDecisionInput): Promise<TurnDecision> {
     const urls = extractUrls(input.inboundBody);
-    if (urls.length === 0) {
-      return this.requestDecision(input, urls);
-    }
 
     // Deterministic fast-path for well-known booking domains.
-    const heuristic = classifyBookingUrls(urls);
-    if (heuristic) {
+    if (urls.length > 0) {
+      const heuristic = classifyBookingUrls(urls);
+      if (heuristic) {
+        return {
+          bookingLinkDetected: true,
+          bookingUrl: heuristic,
+          declineDetected: false,
+          replyText: null,
+          reasoning: "deterministic booking-domain match",
+        };
+      }
+    }
+
+    // Deterministic fast-path for clear firm-decline phrasing.
+    if (classifyDeclineMessage(input.inboundBody)) {
       return {
-        bookingLinkDetected: true,
-        bookingUrl: heuristic,
+        bookingLinkDetected: false,
+        bookingUrl: null,
+        declineDetected: true,
+        declineReason: "firm_declined",
         replyText: null,
-        reasoning: "deterministic booking-domain match",
+        reasoning: "deterministic decline match",
       };
     }
 
@@ -60,9 +73,10 @@ abstract class LlmTurnDecider implements TurnDecider {
     return [
       "You are assisting a secret-shopper SMS agent contacting a law firm.",
       "Return ONLY valid JSON with keys:",
-      'bookingLinkDetected (boolean), bookingUrl (string|null), replyText (string|null), reasoning (string).',
-      "If any URL is a meeting/booking/scheduling link, set bookingLinkDetected=true, bookingUrl to that URL, replyText=null.",
-      "Otherwise write replyText as a natural SMS from the persona.",
+      "bookingLinkDetected (boolean), bookingUrl (string|null), declineDetected (boolean), replyText (string|null), reasoning (string).",
+      "If any URL is a meeting/booking/scheduling link, set bookingLinkDetected=true, bookingUrl to that URL, declineDetected=false, replyText=null.",
+      "If the firm says the prospect is not eligible, they cannot/will not represent them, or otherwise declines the case, set declineDetected=true and replyText=null.",
+      "Otherwise write replyText as a natural SMS from the persona, with declineDetected=false.",
       "",
       "Reply rules:",
       "- Directly answer whatever the latest inbound SMS asks, using the relevant concrete fact from Case facts below.",
@@ -104,10 +118,15 @@ abstract class LlmTurnDecider implements TurnDecider {
     if (bookingLinkDetected && !bookingUrl && urls.length === 1) {
       bookingUrl = urls[0]!;
     }
+    // Booking takes precedence over decline if both are set.
+    const declineDetected = bookingLinkDetected ? false : Boolean(parsed.declineDetected);
+    const stopReplying = bookingLinkDetected || declineDetected;
     return {
       bookingLinkDetected,
       bookingUrl: bookingLinkDetected ? bookingUrl : null,
-      replyText: bookingLinkDetected
+      declineDetected,
+      declineReason: declineDetected ? "firm_declined" : undefined,
+      replyText: stopReplying
         ? null
         : typeof parsed.replyText === "string"
           ? parsed.replyText

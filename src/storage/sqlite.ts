@@ -38,6 +38,22 @@ export interface InsertJobInput {
   externalId?: string | null;
 }
 
+export interface ConversationSummary {
+  id: string;
+  firmName: string;
+  firmPhone: string;
+  fromPhone: string;
+  status: ConversationStatus;
+  startedAt: string;
+  updatedAt: string;
+  messageCount: number;
+  lastMessage: {
+    body: string;
+    direction: MessageDirection;
+    createdAt: string;
+  } | null;
+}
+
 export class ConversationStore {
   private readonly db: Database.Database;
 
@@ -201,6 +217,68 @@ export class ConversationStore {
     return this.getSnapshot(conversation.id);
   }
 
+  listConversationSummaries(): ConversationSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT
+           c.id,
+           c.firm_name,
+           c.firm_phone,
+           c.from_phone,
+           c.status,
+           c.started_at,
+           c.updated_at,
+           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+           (
+             SELECT m.body FROM messages m
+             WHERE m.conversation_id = c.id
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1
+           ) AS last_body,
+           (
+             SELECT m.direction FROM messages m
+             WHERE m.conversation_id = c.id
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1
+           ) AS last_direction,
+           (
+             SELECT m.created_at FROM messages m
+             WHERE m.conversation_id = c.id
+             ORDER BY m.created_at DESC, m.rowid DESC
+             LIMIT 1
+           ) AS last_created_at
+         FROM conversations c
+         ORDER BY c.created_at DESC`,
+      )
+      .all();
+
+    return rows.map((row) => {
+      const r = row as Record<string, unknown>;
+      const lastBody = r.last_body == null ? null : String(r.last_body);
+      const lastDirection = r.last_direction == null ? null : (r.last_direction as MessageDirection);
+      const lastCreatedAt = r.last_created_at == null ? null : String(r.last_created_at);
+
+      return {
+        id: String(r.id),
+        firmName: String(r.firm_name),
+        firmPhone: String(r.firm_phone),
+        fromPhone: String(r.from_phone),
+        status: r.status as ConversationStatus,
+        startedAt: String(r.started_at),
+        updatedAt: String(r.updated_at),
+        messageCount: Number(r.message_count),
+        lastMessage:
+          lastBody != null && lastDirection != null && lastCreatedAt != null
+            ? {
+                body: lastBody,
+                direction: lastDirection,
+                createdAt: lastCreatedAt,
+              }
+            : null,
+      };
+    });
+  }
+
   listMessages(conversationId: string): Message[] {
     const rows = this.db
       .prepare(
@@ -348,6 +426,20 @@ export class ConversationStore {
       .prepare(
         `UPDATE conversations
          SET status = 'expired',
+             stop_reason = ?,
+             updated_at = ?
+         WHERE id = ? AND status = 'active'`,
+      )
+      .run(reason, now, conversationId);
+    return this.getConversation(conversationId);
+  }
+
+  markDeclined(conversationId: string, reason = "firm_declined"): Conversation | null {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE conversations
+         SET status = 'declined',
              stop_reason = ?,
              updated_at = ?
          WHERE id = ? AND status = 'active'`,

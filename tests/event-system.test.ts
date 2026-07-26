@@ -9,7 +9,7 @@ import { FakeMessagingAdapter } from "../src/adapters/messaging.js";
 import { parseGhlInboundMessage } from "../src/adapters/gohighlevel.js";
 import { StubTurnDecider } from "../src/agent/turn.js";
 import { extractUrls } from "../src/agent/urls.js";
-import { classifyBookingUrls } from "../src/agent/turn.js";
+import { classifyBookingUrls, classifyDeclineMessage } from "../src/agent/turn.js";
 import { loadEnv, resetEnvCache, type Env } from "../src/config/env.js";
 import {
   canProcessInbound,
@@ -53,6 +53,15 @@ describe("URL helpers", () => {
     expect(classifyBookingUrls(["https://calendly.com/x/y"])).toBe(
       "https://calendly.com/x/y",
     );
+  });
+
+  it("classifies firm decline messages", () => {
+    expect(classifyDeclineMessage("Yes, we handle personal injury cases.")).toBe(false);
+    expect(classifyDeclineMessage("Sorry, we can't represent you.")).toBe(true);
+    expect(classifyDeclineMessage("Unfortunately you are not eligible for our services.")).toBe(
+      true,
+    );
+    expect(classifyDeclineMessage("We are unable to take your case at this time.")).toBe(true);
   });
 });
 
@@ -289,6 +298,23 @@ describe("ConversationStore", () => {
     expect(store.markExpired(other.id)?.status).toBe("expired");
   });
 
+  it("transitions active -> declined", () => {
+    const conversation = store.createConversation({
+      campaignId: "c3",
+      firmName: "F3",
+      firmPhone: "+15553333333",
+      fromPhone: "+15554444444",
+      personaJson: "{}",
+      startedAt: new Date(),
+      expiresAt: new Date(Date.now() + 3600_000),
+    });
+
+    const declined = store.markDeclined(conversation.id);
+    expect(declined?.status).toBe("declined");
+    expect(declined?.stopReason).toBe("firm_declined");
+    expect(store.markExpired(conversation.id)?.status).toBe("declined");
+  });
+
   it("claims events once", () => {
     expect(store.claimEvent("ghl:inbound:SM1")).toBe(true);
     expect(store.claimEvent("ghl:inbound:SM1")).toBe(false);
@@ -409,6 +435,36 @@ describe("event system integration", () => {
 
     expect(messaging.sent.length).toBe(beforeCount);
     expect(store.getConversation(started.conversationId)?.status).toBe("goal_reached");
+  });
+
+  it("stops on firm decline and suppresses further replies", async () => {
+    const started = await service.startConversation(makePersonaConfig());
+    const beforeCount = messaging.sent.length;
+
+    await service.acceptInbound({
+      messageSid: "SM_DECLINE",
+      from: "+15559876543",
+      to: "+15551234567",
+      body: "Sorry, we can't represent you for this matter.",
+    });
+
+    const conversation = store.getConversation(started.conversationId);
+    expect(conversation?.status).toBe("declined");
+    expect(conversation?.stopReason).toBe("firm_declined");
+    expect(messaging.sent.length).toBe(beforeCount);
+    expect(
+      scheduler.scheduled.filter((j) => j.type === "send-reply").length,
+    ).toBe(0);
+
+    await service.acceptInbound({
+      messageSid: "SM_AFTER_DECLINE",
+      from: "+15559876543",
+      to: "+15551234567",
+      body: "Are you sure?",
+    });
+
+    expect(messaging.sent.length).toBe(beforeCount);
+    expect(store.getConversation(started.conversationId)?.status).toBe("declined");
   });
 
   it("expires via expire-conversation and then stays silent", async () => {
@@ -595,7 +651,7 @@ describe("HTTP routes", () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.body.status).toMatch(/completed|skipped|reply_scheduled|goal_reached|no_reply/);
+    expect(second.body.status).toMatch(/completed|skipped|reply_scheduled|goal_reached|declined|no_reply/);
   });
 
   it("starts a conversation when x-start-token matches", async () => {

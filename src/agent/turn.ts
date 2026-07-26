@@ -5,6 +5,8 @@ import { extractUrls } from "./urls.js";
 export interface TurnDecision {
   bookingLinkDetected: boolean;
   bookingUrl: string | null;
+  declineDetected: boolean;
+  declineReason?: string;
   replyText: string | null;
   reasoning?: string;
 }
@@ -38,6 +40,8 @@ export function classifyBookingUrls(urls: string[]): string | null {
     "outlook.office.com/book",
     "tidycal.com",
     "savvycal.com",
+    "zcal.co",
+    "koalendar.com",
   ];
 
   for (const url of urls) {
@@ -49,6 +53,35 @@ export function classifyBookingUrls(urls: string[]): string | null {
   return null;
 }
 
+/**
+ * Conservative keyword classifier for firm rejection / ineligibility messages.
+ * Returns true when the inbound body clearly declines representation.
+ */
+export function classifyDeclineMessage(body: string): boolean {
+  const lower = body.toLowerCase();
+  const patterns = [
+    /not\s+eligible/,
+    /can(?:'|no)?t\s+represent/,
+    /cannot\s+represent/,
+    /unable\s+to\s+represent/,
+    /won(?:'|no)?t\s+represent/,
+    /will\s+not\s+represent/,
+    /can(?:'|no)?t\s+take\s+(?:your|the)\s+case/,
+    /cannot\s+take\s+(?:your|the)\s+case/,
+    /unable\s+to\s+take\s+(?:your|the)\s+case/,
+    /don(?:'|no)?t\s+handle/,
+    /do\s+not\s+handle/,
+    /outside\s+(?:of\s+)?our\s+practice\s+area/,
+    /not\s+a\s+good\s+fit/,
+    /we\s+must\s+decline/,
+    /unable\s+to\s+assist/,
+    /can(?:'|no)?t\s+assist/,
+    /cannot\s+assist/,
+    /we\s+(?:are\s+)?(?:unable|unable\s+to|not\s+able\s+to)\s+(?:help|assist)/,
+  ];
+  return patterns.some((p) => p.test(lower));
+}
+
 export class StubTurnDecider implements TurnDecider {
   async decide(input: TurnDecisionInput): Promise<TurnDecision> {
     const urls = extractUrls(input.inboundBody);
@@ -57,8 +90,20 @@ export class StubTurnDecider implements TurnDecider {
       return {
         bookingLinkDetected: true,
         bookingUrl,
+        declineDetected: false,
         replyText: null,
         reasoning: "stub classifier matched known booking domain",
+      };
+    }
+
+    if (classifyDeclineMessage(input.inboundBody)) {
+      return {
+        bookingLinkDetected: false,
+        bookingUrl: null,
+        declineDetected: true,
+        declineReason: "firm_declined",
+        replyText: null,
+        reasoning: "stub classifier matched firm decline phrasing",
       };
     }
 
@@ -66,6 +111,7 @@ export class StubTurnDecider implements TurnDecider {
     return {
       bookingLinkDetected: false,
       bookingUrl: null,
+      declineDetected: false,
       replyText,
       reasoning: "stub reply generated from persona",
     };

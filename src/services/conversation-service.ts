@@ -31,8 +31,6 @@ export class ConversationService {
     initialMessageSid: string;
     expiresAt: string;
   }> {
-    this.store.resetAll();
-
     const fromPhone = config.fromPhone ?? this.env.GHL_FROM_NUMBER;
     if (!fromPhone) {
       throw new Error("fromPhone or GHL_FROM_NUMBER is required");
@@ -230,6 +228,15 @@ export class ConversationService {
           return { status: "goal_reached" as const };
         }
 
+        if (decision.declineDetected) {
+          this.store.markDeclined(
+            job.conversationId,
+            decision.declineReason ?? "firm_declined",
+          );
+          this.store.updateJobStatus(jobId, "completed");
+          return { status: "declined" as const };
+        }
+
         if (!decision.replyText) {
           this.store.updateJobStatus(jobId, "completed");
           return { status: "no_reply" as const };
@@ -365,6 +372,10 @@ export class ConversationService {
       if (conversation.status === "goal_reached") {
         this.store.updateJobStatus(jobId, "skipped");
         return { status: "noop_goal_reached" };
+      }
+      if (conversation.status === "declined") {
+        this.store.updateJobStatus(jobId, "skipped");
+        return { status: "noop_declined" };
       }
       if (conversation.status === "expired") {
         this.store.updateJobStatus(jobId, "skipped");

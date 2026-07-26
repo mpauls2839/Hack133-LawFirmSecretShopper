@@ -1,4 +1,4 @@
-export type ConversationStatus = "active" | "goal_reached" | "expired";
+export type ConversationStatus = "active" | "goal_reached" | "expired" | "declined";
 
 export type MessageDirection = "inbound" | "outbound";
 
@@ -52,7 +52,7 @@ export interface ConversationSnapshot {
 }
 
 export function isTerminal(status: ConversationStatus): boolean {
-  return status === "goal_reached" || status === "expired";
+  return status === "goal_reached" || status === "expired" || status === "declined";
 }
 
 export function canProcessInbound(conversation: Conversation, now = new Date()): boolean {
