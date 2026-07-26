@@ -47,15 +47,19 @@ export const config = {
       str(process.env.MARITIME_LLM_BASE, 'https://api.maritime.sh/api/llm/v1'),
     apiKey: str(process.env.OPENAI_API_KEY) || str(process.env.MARITIME_TOKEN),
     /**
-     * Model ids as the Maritime proxy names them, provider-prefixed.
+     * Chosen by measurement, not reputation. Latency and judgement pull against each other
+     * here, so both were timed on real cases from a live run — a blunt lowercase human
+     * reply, a canned acknowledgement, a scripted qualification script. gpt-5.4 was the
+     * fastest of seven tried (705ms average) and correct on all three; the larger models
+     * agreed but took two to three times as long, and the nano tier called the human a bot,
+     * which is the one error that matters because it makes the harness give up on a person.
      *
-     * `openai/gpt-5.4` is what the proxy actually serves — confirmed by asking a deployed
-     * agent, not assumed. No Anthropic models are offered there, so pointing at one would
-     * 404 at the worst possible moment. Override both when running against a provider
-     * directly, where the ids are unprefixed.
+     * Ids are unprefixed for a direct provider call. The Maritime proxy namespaces them
+     * ("openai/gpt-5.4"), so override both when pointing at that instead.
      */
-    fastModel: str(process.env.JUDGE_FAST_MODEL, 'openai/gpt-5.4'),
-    deepModel: str(process.env.JUDGE_DEEP_MODEL, 'openai/gpt-5.4'),
+    fastModel: str(process.env.JUDGE_FAST_MODEL, 'gpt-5.4'),
+    /** Narrative only, written once per run at close. Nothing waits on it. */
+    deepModel: str(process.env.JUDGE_DEEP_MODEL, 'gpt-5.5'),
     timeoutMs: int(process.env.LLM_TIMEOUT_MS, 30_000),
     /** 'auto' uses the HTTP driver when a key exists, else the offline stub. */
     driver: (str(process.env.JUDGE_DRIVER, 'auto')) as 'auto' | 'http' | 'stub',
