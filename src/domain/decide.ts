@@ -28,6 +28,7 @@ export type Goal =
   | 'seek_booking'
   | 'confirm_booking'
   | 'ask_cost'
+  | 'acknowledge_wait'
   | 'wrap_up';
 
 export type Decision = {
@@ -96,9 +97,18 @@ export function decide(view: RunView, cls: Classification): Decision {
     };
   }
 
-  // Only settle for HUMAN_* once there is genuinely no booking in play. Closing while a
-  // slot is on the table throws away the better outcome one turn before it lands.
+  // Only settle for HUMAN_* once there is genuinely nothing still in play. Closing while a
+  // slot is on the table throws away the better outcome one turn before it lands, and
+  // closing after someone says "wait, let me check" hangs up on a person mid-sentence —
+  // recording a worse outcome than they earned and being rude while doing it.
   const bookingInPlay = f.meeting_offered || f.booking_link || view.meetingOffered;
+  if (f.asked_to_wait) {
+    return {
+      action: 'reply',
+      reason: 'the business asked us to hold, so the run stays open',
+      goal: 'acknowledge_wait',
+    };
+  }
   if (humanSeen && turnsSinceHuman >= HUMAN_PURSUIT_TURNS && !bookingInPlay) {
     const specialist = f.specialist_identified || view.specialistSeen;
     return {

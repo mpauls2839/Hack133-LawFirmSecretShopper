@@ -254,3 +254,41 @@ describe('history must never enter a run', () => {
     assert.equal(runs.get(run.id)!.turns, 1);
   });
 });
+
+describe('being asked to hold is not a reason to hang up', () => {
+  test('"Wait for sometime" keeps the run open instead of closing it', async () => {
+    const { readInbound } = await import('../src/judge/deterministic.ts');
+    const { decide } = await import('../src/domain/decide.ts');
+
+    for (const body of [
+      'Wait for sometime',
+      'please wait a moment',
+      'hold on, let me check with Ruth',
+      'one sec',
+      'bear with me',
+    ]) {
+      assert.equal(readInbound(body, []).flags.asked_to_wait, true, `missed hold request in ${JSON.stringify(body)}`);
+    }
+    // And not triggered by ordinary sentences that merely contain the words.
+    assert.equal(readInbound('The wait times at urgent care were long.', []).flags.asked_to_wait, false);
+
+    // A human two turns in who asks us to wait must NOT terminate — this closed a real run.
+    const view = {
+      turns: 3, inboundCount: 3, machineInbound: 0, humanSeen: true, turnsSinceHuman: 2,
+      priceSeen: false, meetingOffered: false, specialistSeen: true, t0: new Date().toISOString(),
+    };
+    const cls = {
+      sender_type: 'human' as const,
+      flags: { ...readInbound('Wait for sometime', []).flags },
+      classifier: 'test',
+      reasons: [],
+    };
+    const decision = decide(view, cls);
+    assert.equal(decision.action, 'reply', 'must not terminate when asked to hold');
+    assert.equal(decision.goal, 'acknowledge_wait');
+
+    // Without the hold request, the same view does terminate.
+    const noWait = { ...cls, flags: { ...cls.flags, asked_to_wait: false } };
+    assert.equal(decide(view, noWait).action, 'terminate');
+  });
+});

@@ -79,6 +79,8 @@ export type Flags = {
   specialist_role: string | null;
   /** Inbound asked us to stop. Hard terminal, always honoured. */
   opt_out_requested: boolean;
+  /** Inbound asked us to hold. Keeps the run open rather than closing it. */
+  asked_to_wait: boolean;
   declined_or_referred: boolean;
 };
 
@@ -93,6 +95,7 @@ export const emptyFlags = (): Flags => ({
   specialist_identified: false,
   specialist_role: null,
   opt_out_requested: false,
+  asked_to_wait: false,
   declined_or_referred: false,
 });
 

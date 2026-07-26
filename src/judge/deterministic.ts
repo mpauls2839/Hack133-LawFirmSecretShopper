@@ -34,6 +34,33 @@ const SPECIALIST_ROLE =
  * convention. Matching it anywhere treats "I had to stop at the hospital" as a request to
  * never contact them again, which would end a legitimate run and lose the finding.
  */
+/**
+ * The business asked us to hold. Closing the run here is exactly wrong: they are still
+ * engaged, and hanging up would record a worse outcome than they earned while also being
+ * rude to someone who did nothing wrong.
+ */
+const ASKED_TO_WAIT = new RegExp(
+  [
+    // Imperative at the start of the message: "Wait for sometime", "Please wait".
+    String.raw`^\s*(?:please\s+|just\s+|kindly\s+)?wait\b`,
+    // Explicitly softened: "please wait", "could you wait".
+    String.raw`\b(?:please|kindly|just|could you|can you|would you)\s+wait\b`,
+    // A duration follows, so it is a request rather than a noun: "wait a moment",
+    // "wait for some time". Bare "wait" is NOT enough — "the wait times were long"
+    // is a sentence about a hospital, not a request to hold.
+    String.raw`\bwait\s+(?:for\s+)?(?:a|an|one|some|sometime|some time|few|couple)\b`,
+    String.raw`\bhold on\b`,
+    String.raw`\bhang on\b`,
+    String.raw`\bone (?:sec|second|moment|minute)\b`,
+    String.raw`\bgive (?:me|us) (?:a|one|some) (?:sec|second|minute|moment|time)\b`,
+    String.raw`\bbear with (?:me|us)\b`,
+    String.raw`\blet me (?:check|look|find out|ask|see)\b`,
+    String.raw`\bchecking (?:on )?(?:that|this)\b`,
+    String.raw`\bstand ?by\b`,
+  ].join('|'),
+  'i',
+);
+
 const OPT_OUT_STANDALONE =
   /^\s*(?:stop|stopall|unsubscribe|quit|cancel|end|revoke|optout|opt[- ]out|remove)\s*[.!]?\s*$/i;
 
@@ -165,6 +192,10 @@ export function readInbound(body: string, priorInbound: string[]): Deterministic
   if (OPT_OUT_STANDALONE.test(body) || OPT_OUT_PHRASE.test(body)) {
     flags.opt_out_requested = true;
     reasons.push('opt-out language, honoured immediately');
+  }
+  if (ASKED_TO_WAIT.test(body)) {
+    flags.asked_to_wait = true;
+    reasons.push("asked us to hold; the run stays open");
   }
   if (DECLINE.test(body)) {
     flags.declined_or_referred = true;
