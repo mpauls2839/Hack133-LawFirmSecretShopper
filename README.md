@@ -76,7 +76,7 @@ maritime login
 ```bash
 maritime create secret-shopper \
   --repo https://github.com/mpauls2839/Hack133-LawFirmSecretShopper \
-  --branch event-driven-triggers \
+  --branch main \
   --public --port 3000
 ```
 
@@ -125,7 +125,7 @@ Redeploy after code changes:
 ```bash
 maritime deploy secret-shopper --source github \
   --repo https://github.com/mpauls2839/Hack133-LawFirmSecretShopper \
-  --branch event-driven-triggers -w
+  --branch main -w
 ```
 
 ## Wire inbound SMS (GHL Workflow)
