@@ -160,6 +160,13 @@ export class ConversationStore {
     return row ? mapConversation(row as Record<string, unknown>) : null;
   }
 
+  getLatestConversation(): Conversation | null {
+    const row = this.db
+      .prepare(`SELECT * FROM conversations ORDER BY created_at DESC LIMIT 1`)
+      .get();
+    return row ? mapConversation(row as Record<string, unknown>) : null;
+  }
+
   getConversation(id: string): Conversation | null {
     const row = this.db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(id);
     return row ? mapConversation(row as Record<string, unknown>) : null;
@@ -184,6 +191,14 @@ export class ConversationStore {
     }
     const messages = this.listMessages(conversationId);
     return { conversation, messages };
+  }
+
+  getLatestSnapshot(): ConversationSnapshot | null {
+    const conversation = this.getLatestConversation();
+    if (!conversation) {
+      return null;
+    }
+    return this.getSnapshot(conversation.id);
   }
 
   listMessages(conversationId: string): Message[] {

@@ -1,4 +1,5 @@
 import type { Env } from "../config/env.js";
+import { DEFAULT_ANTHROPIC_BASE_URL } from "../config/env.js";
 import {
   StubTurnDecider,
   classifyBookingUrls,
@@ -12,6 +13,8 @@ export function createTurnDecider(env: Env): TurnDecider {
   switch (env.LLM_PROVIDER) {
     case "openai":
       return new OpenAiTurnDecider(env);
+    case "anthropic":
+      return new AnthropicTurnDecider(env);
     case "stub":
     default:
       return new StubTurnDecider();
@@ -157,6 +160,61 @@ class OpenAiTurnDecider extends LlmTurnDecider {
     const content = data.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error("OpenAI-compatible response missing content");
+    }
+    return this.parseDecision(content, urls);
+  }
+}
+
+class AnthropicTurnDecider extends LlmTurnDecider {
+  private static readonly SYSTEM_PROMPT =
+    "You produce structured JSON decisions for an SMS secret-shopper agent. Respond with a single JSON object and nothing else.";
+
+  protected async requestDecision(
+    input: TurnDecisionInput,
+    urls: string[],
+  ): Promise<TurnDecision> {
+    if (!this.env.LLM_API_KEY) {
+      throw new Error(
+        "LLM_API_KEY or ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic",
+      );
+    }
+
+    // Fall back to Anthropic's host if the base URL is still the OpenAI default.
+    const configured = this.env.LLM_BASE_URL;
+    const baseUrl = (
+      configured.includes("api.openai.com") ? DEFAULT_ANTHROPIC_BASE_URL : configured
+    ).replace(/\/+$/, "");
+
+    const response = await fetch(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "x-api-key": this.env.LLM_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.env.LLM_MODEL,
+        max_tokens: 512,
+        temperature: 0.3,
+        system: AnthropicTurnDecider.SYSTEM_PROMPT,
+        messages: [{ role: "user", content: this.buildPrompt(input, urls) }],
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Anthropic request failed (${response.status}): ${text}`);
+    }
+
+    const data = (await response.json()) as {
+      content?: Array<{ type?: string; text?: string }>;
+    };
+    const content = data.content
+      ?.filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("");
+    if (!content) {
+      throw new Error("Anthropic response missing text content");
     }
     return this.parseDecision(content, urls);
   }

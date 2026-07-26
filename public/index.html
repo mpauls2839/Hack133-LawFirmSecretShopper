@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Secret Shopper</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --card: #fff;
+      --border: #dde1e6;
+      --text: #1a1d21;
+      --muted: #6b7280;
+      --outbound: #dbeafe;
+      --inbound: #f3f4f6;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --danger: #b91c1c;
+      --ok: #15803d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 1.25rem;
+    }
+    h1 {
+      font-size: 1.25rem;
+      margin: 0 0 1rem;
+      font-weight: 650;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+      color: var(--muted);
+    }
+    input, textarea {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font: inherit;
+      margin-bottom: 0.75rem;
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.6rem 1rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      align-items: center;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      background: #e5e7eb;
+      color: #374151;
+    }
+    .badge.active { background: #dcfce7; color: var(--ok); }
+    .badge.goal_reached { background: #dbeafe; color: #1d4ed8; }
+    .badge.expired { background: #fee2e2; color: var(--danger); }
+    .thread {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      min-height: 200px;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    .bubble {
+      max-width: 80%;
+      padding: 0.65rem 0.8rem;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.outbound {
+      align-self: flex-end;
+      background: var(--outbound);
+      border-bottom-right-radius: 4px;
+    }
+    .bubble.inbound {
+      align-self: flex-start;
+      background: var(--inbound);
+      border-bottom-left-radius: 4px;
+    }
+    .bubble .who {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+      text-transform: uppercase;
+    }
+    .bubble .time {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-top: 0.35rem;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: center;
+      padding: 2rem 1rem;
+    }
+    .error {
+      color: var(--danger);
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+    .ok-msg {
+      color: var(--ok);
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Law Firm Secret Shopper</h1>
+
+    <section class="card">
+      <form id="start-form">
+        <label for="firmName">Firm name</label>
+        <input id="firmName" name="firmName" type="text" required />
+
+        <label for="firmPhone">Firm phone</label>
+        <input id="firmPhone" name="firmPhone" type="tel" placeholder="+18476917564" required />
+
+        <label for="initialMessage">Initial message</label>
+        <textarea id="initialMessage" name="initialMessage" required></textarea>
+
+        <button type="submit" id="start-btn">Start conversation</button>
+        <div id="form-msg"></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="meta" id="meta">
+        <span class="badge" id="status">none</span>
+        <span id="phones"></span>
+      </div>
+      <div id="booking"></div>
+      <div class="thread" id="thread">
+        <div class="empty">No conversation yet. Start one above.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("start-form");
+    const startBtn = document.getElementById("start-btn");
+    const formMsg = document.getElementById("form-msg");
+    const statusEl = document.getElementById("status");
+    const phonesEl = document.getElementById("phones");
+    const bookingEl = document.getElementById("booking");
+    const threadEl = document.getElementById("thread");
+
+    async function loadConfig() {
+      const res = await fetch("/ui/config");
+      if (!res.ok) throw new Error("Failed to load config");
+      const data = await res.json();
+      document.getElementById("firmName").value = data.firmName || "";
+      document.getElementById("firmPhone").value = data.firmPhone || "+18476917564";
+      document.getElementById("initialMessage").value = data.initialMessage || "";
+    }
+
+    function formatTime(iso) {
+      try {
+        return new Date(iso).toLocaleString();
+      } catch {
+        return iso;
+      }
+    }
+
+    function renderConversation(data) {
+      if (!data) {
+        statusEl.textContent = "none";
+        statusEl.className = "badge";
+        phonesEl.textContent = "";
+        bookingEl.innerHTML = "";
+        threadEl.innerHTML = '<div class="empty">No conversation yet. Start one above.</div>';
+        return;
+      }
+
+      statusEl.textContent = data.status;
+      statusEl.className = "badge " + data.status;
+      phonesEl.textContent =
+        "Firm " + data.firmPhone + " · From " + data.fromPhone +
+        (data.firmName ? " · " + data.firmName : "");
+
+      if (data.bookingUrl) {
+        bookingEl.innerHTML =
+          '<p style="font-size:0.85rem;margin:0 0 0.75rem">Booking: <a href="' +
+          encodeURI(data.bookingUrl) +
+          '" target="_blank" rel="noopener">' +
+          data.bookingUrl +
+          "</a></p>";
+      } else if (data.stopReason) {
+        bookingEl.innerHTML =
+          '<p style="font-size:0.85rem;margin:0 0 0.75rem;color:var(--muted)">Stopped: ' +
+          data.stopReason +
+          "</p>";
+      } else {
+        bookingEl.innerHTML = "";
+      }
+
+      if (!data.messages || data.messages.length === 0) {
+        threadEl.innerHTML = '<div class="empty">Waiting for messages…</div>';
+        return;
+      }
+
+      threadEl.innerHTML = data.messages
+        .map(function (m) {
+          const who = m.direction === "outbound" ? "You (shopper)" : "Firm";
+          return (
+            '<div class="bubble ' +
+            m.direction +
+            '"><div class="who">' +
+            who +
+            '</div><div class="body"></div><div class="time">' +
+            formatTime(m.createdAt) +
+            "</div></div>"
+          );
+        })
+        .join("");
+
+      const bodies = threadEl.querySelectorAll(".bubble .body");
+      data.messages.forEach(function (m, i) {
+        bodies[i].textContent = m.body;
+      });
+
+      threadEl.scrollTop = threadEl.scrollHeight;
+    }
+
+    async function refreshConversation() {
+      try {
+        const res = await fetch("/ui/conversation");
+        if (!res.ok) return;
+        const data = await res.json();
+        renderConversation(data);
+      } catch {
+        // ignore transient poll errors
+      }
+    }
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      formMsg.textContent = "";
+      formMsg.className = "";
+      startBtn.disabled = true;
+
+      try {
+        const res = await fetch("/ui/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            firmName: document.getElementById("firmName").value.trim(),
+            firmPhone: document.getElementById("firmPhone").value.trim(),
+            initialMessage: document.getElementById("initialMessage").value.trim(),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || data.error || "Start failed");
+        }
+        formMsg.className = "ok-msg";
+        formMsg.textContent = "Started. Conversation " + data.conversationId.slice(0, 8) + "…";
+        await refreshConversation();
+      } catch (err) {
+        formMsg.className = "error";
+        formMsg.textContent = err.message || "Start failed";
+      } finally {
+        startBtn.disabled = false;
+      }
+    });
+
+    loadConfig().catch(function (err) {
+      formMsg.className = "error";
+      formMsg.textContent = err.message || "Config load failed";
+    });
+    refreshConversation();
+    setInterval(refreshConversation, 3000);
+  </script>
+</body>
+</html>

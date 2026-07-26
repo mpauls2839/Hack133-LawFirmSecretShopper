@@ -530,7 +530,7 @@ describe("HTTP routes", () => {
 
   it("rejects invalid GoHighLevel signatures", async () => {
     messaging.validSignatures = false;
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
     const res = await request(app).post("/webhooks/gohighlevel").send({
       type: "InboundMessage",
       messageId: "SM1",
@@ -543,7 +543,7 @@ describe("HTTP routes", () => {
   });
 
   it("acknowledges valid inbound SMS with JSON", async () => {
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
     const res = await request(app).post("/webhooks/gohighlevel").send({
       type: "InboundMessage",
       messageId: "SM_HTTP_1",
@@ -560,7 +560,7 @@ describe("HTTP routes", () => {
 
   it("rejects invalid QStash signatures", async () => {
     scheduler.validSignatures = false;
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
     const res = await request(app)
       .post("/jobs/process-inbound")
       .send({ jobId: "missing", conversationId: "x", type: "process-inbound" });
@@ -568,7 +568,7 @@ describe("HTTP routes", () => {
   });
 
   it("handles job callbacks idempotently", async () => {
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
 
     scheduler.onSchedule = async () => undefined;
     const accepted = await service.acceptInbound({
@@ -604,7 +604,7 @@ describe("HTTP routes", () => {
       START_CONVERSATION_TOKEN: "test-start-token",
     };
     service = new ConversationService(store, messaging, scheduler, new StubTurnDecider(), env);
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
     const before = messaging.sent.length;
 
     const res = await request(app)
@@ -623,7 +623,7 @@ describe("HTTP routes", () => {
       ...env,
       START_CONVERSATION_TOKEN: "test-start-token",
     };
-    const app = createApp({ env, service, messaging, scheduler });
+    const app = createApp({ env, service, messaging, scheduler, store });
     const res = await request(app).post("/conversations/start").send(makePersonaConfig());
     expect(res.status).toBe(401);
   });

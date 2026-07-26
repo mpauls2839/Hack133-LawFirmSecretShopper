@@ -8,6 +8,7 @@ const optionalNonEmptyString = z.preprocess(
 );
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
 const envSchema = z.object({
   PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -33,8 +34,11 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  /** stub = tests; openai = OpenAI-compatible API (incl. Maritime LLM proxy). */
-  LLM_PROVIDER: z.enum(["stub", "openai"]).default("stub"),
+  /**
+   * stub = tests; openai = OpenAI-compatible API (incl. Maritime LLM proxy);
+   * anthropic = native Anthropic Messages API (Claude).
+   */
+  LLM_PROVIDER: z.enum(["stub", "openai", "anthropic"]).default("stub"),
   /** Explicit key, or fall back to Maritime-injected OPENAI_API_KEY. */
   LLM_API_KEY: optionalNonEmptyString,
   /** Explicit base URL, or fall back to OPENAI_BASE_URL, then api.openai.com. */
@@ -69,7 +73,11 @@ export function loadEnv(overrides: Record<string, string | undefined> = {}): Env
   const resolvedBaseUrl =
     firstNonEmpty(merged.LLM_BASE_URL, merged.OPENAI_BASE_URL) ??
     DEFAULT_OPENAI_BASE_URL;
-  const resolvedApiKey = firstNonEmpty(merged.LLM_API_KEY, merged.OPENAI_API_KEY);
+  const resolvedApiKey = firstNonEmpty(
+    merged.LLM_API_KEY,
+    merged.OPENAI_API_KEY,
+    merged.ANTHROPIC_API_KEY,
+  );
 
   const parsed = envSchema.parse({
     ...merged,

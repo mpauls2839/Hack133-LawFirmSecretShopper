@@ -15,7 +15,7 @@ function main(): void {
   const decider = createTurnDecider(env);
   const service = new ConversationService(store, messaging, scheduler, decider, env);
 
-  const app = createApp({ env, service, messaging, scheduler });
+  const app = createApp({ env, service, messaging, scheduler, store });
 
   app.listen(env.PORT, () => {
     console.log(`Secret shopper event service listening on :${env.PORT}`);
