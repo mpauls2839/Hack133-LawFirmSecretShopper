@@ -13,6 +13,7 @@
  */
 import { config } from '../config.ts';
 import { logEvent } from '../db/index.ts';
+import { listAwaitInbound } from '../frontdoor/await-inbound.ts';
 import type { ChannelAdapter, InboundEvent, InboundSink, SendArgs, SendResult } from './types.ts';
 
 const CONVERSATIONS_VERSION = '2021-04-15';
@@ -158,8 +159,9 @@ export const ghlAdapter: ChannelAdapter = {
   },
 
   /**
-   * Polls only the conversations bound to active runs. Webhooks come later; polling
-   * first is the spec's day-one choice and it avoids needing a public URL.
+   * Polls bound conversations, plus a discovery pass for Path B await-inbound runs:
+   * list recent inbound SMS conversations for the location and feed unseen messages
+   * to the sink without a run_id so the matcher can claim them.
    */
   start(sink: InboundSink): void {
     if (pollTimer) return;
@@ -184,7 +186,7 @@ export const ghlAdapter: ChannelAdapter = {
               provider: 'ghl',
               provider_id: id,
               from: m.contactId ?? binding.contact_id,
-              to: config.channel.ghl.fromNumber,
+              to: config.channel.ghl.fromNumber || config.frontdoor.inboundNumber,
               body,
               ts: m.dateAdded ?? new Date().toISOString(),
               run_id: runId,
@@ -192,6 +194,15 @@ export const ghlAdapter: ChannelAdapter = {
           }
         } catch (err) {
           logEvent(runId, 'ghl_poll_error', { error: (err as Error).message });
+        }
+      }
+
+      // Path B discovery: only when something is waiting for an unsolicited reply.
+      if (listAwaitInbound().length > 0) {
+        try {
+          await discoverInbound(sink);
+        } catch (err) {
+          logEvent(null, 'ghl_discover_error', { error: (err as Error).message });
         }
       }
     };
@@ -205,6 +216,64 @@ export const ghlAdapter: ChannelAdapter = {
     pollTimer = null;
   },
 };
+
+/**
+ * Lists recent inbound SMS conversations and forwards unseen messages to the sink
+ * without a run_id. The router's await-inbound matcher claims them.
+ */
+async function discoverInbound(sink: InboundSink): Promise<number> {
+  const locationId = config.channel.ghl.locationId;
+  if (!locationId) return 0;
+  const qs = new URLSearchParams({
+    locationId,
+    lastMessageDirection: 'inbound',
+    lastMessageType: 'TYPE_SMS',
+    limit: '20',
+    sort: 'desc',
+    sortBy: 'last_message_date',
+  });
+  const res = await api('GET', `/conversations/search?${qs}`, { version: CONVERSATIONS_VERSION });
+  if (!res.ok) {
+    logEvent(null, 'ghl_discover_search_failed', { status: res.status });
+    return 0;
+  }
+  const conversations: Json[] = res.body?.conversations ?? [];
+  let delivered = 0;
+  for (const conv of conversations) {
+    const conversationId = conv.id as string | undefined;
+    if (!conversationId) continue;
+    // Skip conversations already bound to a run (normal poller owns those).
+    if (runIdForConversation(conversationId)) continue;
+
+    const msgs = await api('GET', `/conversations/${conversationId}/messages?limit=10`, {
+      version: CONVERSATIONS_VERSION,
+    });
+    if (!msgs.ok) continue;
+    const list: Json[] = msgs.body?.messages?.messages ?? msgs.body?.messages ?? [];
+    for (const m of [...list].reverse()) {
+      const id = m.id ?? m.messageId;
+      const inbound = m.direction === 'inbound';
+      if (!id || !inbound || seen.has(id)) continue;
+      seen.add(id);
+      const body = String(m.body ?? m.message ?? '').trim();
+      if (!body) continue;
+      const fromPhone = String(conv.phone ?? m.contactId ?? conv.contactId ?? '').trim();
+      await sink({
+        provider: 'ghl',
+        provider_id: id,
+        from: fromPhone,
+        to: config.channel.ghl.fromNumber || config.frontdoor.inboundNumber,
+        body,
+        ts: m.dateAdded ?? new Date().toISOString(),
+        conversation_id: conversationId,
+        // No run_id — matcher claims an await-inbound run.
+      } satisfies InboundEvent);
+      delivered += 1;
+    }
+  }
+  if (delivered > 0) logEvent(null, 'ghl_discover_delivered', { count: delivered });
+  return delivered;
+}
 
 /**
  * Marks history as already-seen so a fresh run does not ingest a conversation's backlog.

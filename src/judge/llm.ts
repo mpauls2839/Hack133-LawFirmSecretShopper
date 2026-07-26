@@ -131,6 +131,66 @@ export async function chatJson<T>(opts: ChatOptions): Promise<T | null> {
   return null;
 }
 
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+};
+
+export type ToolCall = {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+};
+
+export type ChatToolDefinition = {
+  type: 'function';
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+
+export type ChatWithToolsOptions = {
+  model: string;
+  messages: ChatMessage[];
+  tools: ChatToolDefinition[];
+  maxTokens?: number;
+  temperature?: number;
+  tag: string;
+};
+
+export type ChatWithToolsResult = {
+  content: string | null;
+  tool_calls: ToolCall[];
+  finish_reason: string | null;
+};
+
+/**
+ * OpenAI-compatible tool-calling turn. Returns null when the LLM is unavailable so
+ * callers can abort cleanly. Used by the front-door browser agent.
+ */
+export async function chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult | null> {
+  if (!llmAvailable()) return null;
+  const limit = opts.maxTokens ?? 1_200;
+  const reasoning = isReasoningModel(opts.model);
+  const json = await post('/chat/completions', {
+    model: opts.model,
+    ...(reasoning ? { max_completion_tokens: limit } : { max_tokens: limit, temperature: opts.temperature ?? 0 }),
+    messages: opts.messages,
+    tools: opts.tools,
+    tool_choice: 'auto',
+  });
+  if (!json) return null;
+  const message = json?.choices?.[0]?.message;
+  const finish = json?.choices?.[0]?.finish_reason ?? null;
+  const toolCalls = Array.isArray(message?.tool_calls) ? (message.tool_calls as ToolCall[]) : [];
+  return {
+    content: typeof message?.content === 'string' ? message.content : null,
+    tool_calls: toolCalls,
+    finish_reason: finish,
+  };
+}
+
 /**
  * Health probe. A wrong model name in env is a silent 404 at the worst moment, so the
  * router exposes what the proxy actually serves at /api/health/models.

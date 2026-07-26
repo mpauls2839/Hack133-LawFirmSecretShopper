@@ -18,6 +18,14 @@ import { judgeStatus, listModels } from './judge/llm.ts';
 import { OUTCOMES } from './domain/states.ts';
 import { ghlAdapter, bindRun, ensureContact, runIdForConversation } from './channels/ghl.ts';
 import { mockAdapter } from './channels/mock.ts';
+import { runFrontdoorAgent } from './frontdoor/agent.ts';
+import {
+  claimAwaitInbound,
+  isOurInboundNumber,
+  listAwaitInbound,
+  normalizePhone,
+} from './frontdoor/await-inbound.ts';
+import { guessLineType } from './ingest/extract.ts';
 import type { InboundEvent } from './channels/types.ts';
 
 const app = express();
@@ -29,11 +37,58 @@ const persona = seedPersona();
 const adapter = config.channel.default === 'ghl' && ghlAdapter.available() ? ghlAdapter : mockAdapter;
 useAdapter(adapter);
 
+/**
+ * Path B matcher: when an inbound SMS arrives at our number with no run binding,
+ * claim the oldest await-inbound run and bind the firm's sender as the GHL contact.
+ */
+async function resolveRunId(event: InboundEvent): Promise<string | null> {
+  if (event.run_id) return event.run_id;
+  if (event.conversation_id) {
+    const byConv = runIdForConversation(event.conversation_id);
+    if (byConv) return byConv;
+  }
+
+  if (!isOurInboundNumber(event.to) || listAwaitInbound().length === 0) return null;
+
+  const claimed = claimAwaitInbound(event.to || config.frontdoor.inboundNumber);
+  if (!claimed) return null;
+
+  const firmPhone = normalizePhone(event.from);
+  if (firmPhone && /\d{7,}/.test(firmPhone.replace(/\D/g, ''))) {
+    runs.patch(claimed.run_id, { channel_address: firmPhone });
+  }
+
+  if (adapter.name === 'ghl' && firmPhone && /\d{7,}/.test(firmPhone.replace(/\D/g, ''))) {
+    const contact = await ensureContact({
+      phone: firmPhone,
+      name: persona.name,
+      runId: claimed.run_id,
+    });
+    if (!('error' in contact)) {
+      bindRun(claimed.run_id, {
+        contact_id: contact.contact_id,
+        conversation_id: event.conversation_id ?? null,
+      });
+      logEvent(claimed.run_id, 'await_inbound_bound', {
+        contact_id: contact.contact_id,
+        firm_phone: firmPhone,
+        conversation_id: event.conversation_id ?? null,
+      });
+    } else {
+      logEvent(claimed.run_id, 'await_inbound_bind_failed', { error: contact.error, firm_phone: firmPhone });
+    }
+  } else if (event.conversation_id) {
+    bindRun(claimed.run_id, { contact_id: event.from || 'unknown', conversation_id: event.conversation_id });
+  }
+
+  return claimed.run_id;
+}
+
 /** One entry point for inbound, whatever the transport. */
 async function sink(event: InboundEvent): Promise<void> {
-  const runId = event.run_id ?? runIdForConversation(event.provider_id);
+  const runId = await resolveRunId(event);
   if (!runId) {
-    logEvent(null, 'inbound_unrouted', { provider: event.provider, provider_id: event.provider_id });
+    logEvent(null, 'inbound_unrouted', { provider: event.provider, provider_id: event.provider_id, to: event.to });
     return;
   }
   const res = await handleInbound({ ...event, run_id: runId });
@@ -54,6 +109,11 @@ app.get('/api/health', (_req, res) => {
     allowlist: loadAllowlist(),
     persona: { id: persona.id, name: persona.name, need_tags: persona.need_tags },
     runs: runs.list().length,
+    frontdoor: {
+      inbound_number: config.frontdoor.inboundNumber,
+      model: config.frontdoor.model,
+      awaiting: listAwaitInbound().length,
+    },
   });
 });
 
@@ -87,6 +147,169 @@ app.post('/api/targets', async (req, res) => {
 
 app.get('/api/targets', (_req, res) => res.json({ ok: true, targets: targets.list() }));
 
+// ----------------------------------------------------------------- frontdoor ---
+
+/**
+ * Browser-driven first contact. Prefers submitting the firm's intake form with our
+ * inbound number; falls back to discovering a phone to text. Live form submission
+ * intentionally bypasses ALLOW_LIVE_SENDS / allowlist.
+ *
+ * Body: { url: string, domain?: string, open_run?: boolean }
+ *   open_run (default true for form_submitted / sms when channel is ready):
+ *     form_submitted -> opens an await-inbound run
+ *     sms            -> opens a run that texts the discovered number (if send gate allows)
+ */
+app.post('/api/frontdoor', async (req, res) => {
+  const url = String(req.body?.url ?? '').trim();
+  if (!url) return res.status(400).json({ ok: false, error: 'url is required' });
+  const openRunFlag = req.body?.open_run !== false;
+
+  try {
+    const ingested = await ingestTarget(url, { domain: req.body?.domain ?? null });
+    const target = ingested.target;
+
+    const result = await runFrontdoorAgent({
+      url,
+      persona: {
+        name: persona.name,
+        email: persona.contact.email,
+        phone: persona.contact.phone,
+        need: persona.need,
+      },
+      inboundNumber: config.frontdoor.inboundNumber,
+      hints: {
+        phones: target.phones.map((p) => p.number),
+        formUrl: target.form?.url ?? null,
+        formCaptcha: target.form?.captcha ?? null,
+      },
+    });
+
+    logEvent(null, 'frontdoor_plan', {
+      target_id: target.id,
+      plan: result.plan,
+      steps: result.steps,
+      tool_trace: result.tool_trace.slice(-20),
+    });
+
+    if (result.plan.mode === 'unreachable') {
+      return res.json({
+        ok: false,
+        target_id: target.id,
+        plan: result.plan,
+        steps: result.steps,
+        tool_trace: result.tool_trace,
+      });
+    }
+
+    if (result.plan.mode === 'sms') {
+      const phone = normalizePhone(result.plan.phone);
+      const guess = guessLineType(phone);
+      // Persist the discovered number so subsequent openRun / UI can see it.
+      targets.upsert({
+        url: target.url,
+        domain: target.domain,
+        name: target.name,
+        category: target.category,
+        city: target.city,
+        timezone: target.timezone,
+        services: target.services,
+        stated_hours_text: target.stated_hours_text,
+        hours: target.hours,
+        hours_confidence: target.hours_confidence,
+        claims_247: target.claims_247,
+        chat_widget: target.chat_widget,
+        form: target.form,
+        reachable: true,
+        unreachable_reason: null,
+        ingest_notes: [...target.ingest_notes, `frontdoor sms: ${phone}`],
+        phones: [
+          { number: phone, line_type: guess.line_type, sms_capable: guess.sms_capable, source: 'frontdoor' },
+          ...target.phones
+            .filter((p) => normalizePhone(p.number) !== phone)
+            .map((p) => ({
+              number: p.number,
+              line_type: p.line_type,
+              sms_capable: p.sms_capable,
+              source: p.source,
+            })),
+        ],
+        emails: target.emails,
+      });
+
+      let opened: Awaited<ReturnType<typeof openRun>> | null = null;
+      if (openRunFlag) {
+        if (adapter.name === 'ghl') {
+          const contact = await ensureContact({ phone, name: persona.name, runId: 'pending' });
+          if ('error' in contact) {
+            return res.status(502).json({
+              ok: false,
+              error: contact.error,
+              target_id: target.id,
+              plan: result.plan,
+              steps: result.steps,
+              tool_trace: result.tool_trace,
+            });
+          }
+          opened = await openRun(target.id, {
+            cycle: req.body?.cycle,
+            channel: 'sms',
+            address: phone,
+            agentName: 'frontdoor-sms',
+          });
+          if (opened.ok) bindRun(opened.run.id, { contact_id: contact.contact_id, conversation_id: null });
+        } else {
+          opened = await openRun(target.id, {
+            cycle: req.body?.cycle,
+            channel: 'sms',
+            address: phone,
+            agentName: 'frontdoor-sms',
+          });
+        }
+      }
+
+      return res.json({
+        ok: true,
+        target_id: target.id,
+        plan: { ...result.plan, phone },
+        steps: result.steps,
+        tool_trace: result.tool_trace,
+        run: opened?.run ?? null,
+        run_ok: opened?.ok ?? null,
+        run_reason: opened && !opened.ok ? opened.reason : opened?.ok ? opened.first_contact : null,
+      });
+    }
+
+    // form_submitted
+    let opened: Awaited<ReturnType<typeof openRun>> | null = null;
+    if (openRunFlag) {
+      opened = await openRun(target.id, {
+        cycle: req.body?.cycle,
+        awaitInbound: true,
+        inboundNumber: result.plan.expected_inbound_number || config.frontdoor.inboundNumber,
+        agentName: 'frontdoor-form',
+      });
+    }
+
+    return res.json({
+      ok: true,
+      target_id: target.id,
+      plan: result.plan,
+      steps: result.steps,
+      tool_trace: result.tool_trace,
+      run: opened?.run ?? null,
+      run_ok: opened?.ok ?? null,
+      run_reason: opened && !opened.ok ? opened.reason : 'awaiting inbound SMS',
+    });
+  } catch (err) {
+    logEvent(null, 'frontdoor_error', { url, error: (err as Error).message });
+    return res.status(502).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+app.get('/api/frontdoor/awaiting', (_req, res) => {
+  res.json({ ok: true, awaiting: listAwaitInbound() });
+});
+
 // ---------------------------------------------------------------------- runs ---
 
 app.post('/api/runs', async (req, res) => {
@@ -94,18 +317,38 @@ app.post('/api/runs', async (req, res) => {
   const target = targets.get(targetId);
   if (!target) return res.status(404).json({ ok: false, error: 'target not found' });
 
+  const channelOverride = req.body?.channel as 'sms' | 'email' | 'form' | undefined;
+  const addressOverride = req.body?.address ? String(req.body.address) : undefined;
+
   // Bind a CRM contact before the first send so inbound polling is scoped to this run.
-  if (adapter.name === 'ghl') {
-    const phone = target.phones[0]?.number;
+  if (adapter.name === 'ghl' && !req.body?.await_inbound) {
+    const phone = addressOverride || target.phones[0]?.number;
     if (!phone) return res.status(400).json({ ok: false, error: 'target has no phone to bind' });
     const contact = await ensureContact({ phone, name: persona.name, runId: 'pending' });
     if ('error' in contact) return res.status(502).json({ ok: false, error: contact.error });
-    const opened = await openRun(targetId, { cycle: req.body?.cycle });
+    const opened = await openRun(targetId, {
+      cycle: req.body?.cycle,
+      channel: channelOverride,
+      address: addressOverride,
+    });
     if (opened.ok) bindRun(opened.run.id, { contact_id: contact.contact_id, conversation_id: null });
     return res.json({ ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason });
   }
 
-  const opened = await openRun(targetId, { cycle: req.body?.cycle });
+  if (req.body?.await_inbound) {
+    const opened = await openRun(targetId, {
+      cycle: req.body?.cycle,
+      awaitInbound: true,
+      inboundNumber: req.body?.inbound_number ? String(req.body.inbound_number) : undefined,
+    });
+    return res.json({ ok: opened.ok, run: opened.run, reason: opened.ok ? 'awaiting inbound SMS' : opened.reason });
+  }
+
+  const opened = await openRun(targetId, {
+    cycle: req.body?.cycle,
+    channel: channelOverride,
+    address: addressOverride,
+  });
   res.json({ ok: opened.ok, run: opened.run, reason: opened.ok ? opened.first_contact : opened.reason });
 });
 
@@ -152,11 +395,12 @@ app.post('/api/inbound/:provider', async (req, res) => {
   const event: InboundEvent = {
     provider: req.params.provider,
     provider_id: String(body.messageId ?? body.id ?? body.provider_id ?? ''),
-    from: String(body.from ?? body.contactId ?? ''),
-    to: String(body.to ?? ''),
+    from: String(body.from ?? body.phone ?? body.contactId ?? ''),
+    to: String(body.to ?? config.frontdoor.inboundNumber),
     body: String(body.message ?? body.body ?? ''),
     ts: String(body.dateAdded ?? body.ts ?? new Date().toISOString()),
     run_id: body.run_id,
+    conversation_id: body.conversationId ?? body.conversation_id,
   };
   if (!event.provider_id || !event.body) {
     return res.status(202).json({ ok: true, ignored: 'missing message id or body' });
@@ -209,6 +453,7 @@ const server = app.listen(config.port, () => {
   console.log(`  judge        ${judge.driver}${judge.driver === 'http' ? ` (${judge.model})` : ''} — ${judge.reason}`);
   console.log(`  live sends   ${config.channel.allowLiveSends}   allowlist ${JSON.stringify(loadAllowlist())}`);
   console.log(`  persona      ${persona.name} [${persona.need_tags.join(', ')}]`);
+  console.log(`  frontdoor    inbound ${config.frontdoor.inboundNumber} model ${config.frontdoor.model}`);
   console.log(`  sweep every  ${config.loop.sweepMs / 1000}s`);
 });
 

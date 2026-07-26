@@ -21,12 +21,13 @@ export const ROOT = resolve(import.meta.dirname, '..');
 export const config = {
   port: int(process.env.PORT, 3000),
   dbPath: process.env.DB_PATH ?? resolve(ROOT, 'data/intake-grader.db'),
-  routerPublicUrl: process.env.ROUTER_PUBLIC_URL ?? '',
+  /** Alias PUBLIC_BASE_URL kept for older env files / Maritime templates. */
+  routerPublicUrl: str(process.env.ROUTER_PUBLIC_URL) || str(process.env.PUBLIC_BASE_URL),
 
   // ---- judge -------------------------------------------------------------
   /**
    * Inside a Maritime agent the platform injects OPENAI_BASE_URL + OPENAI_API_KEY
-   * (`mllm_<agentId>_…`), so those win. MARITIME_* are the local-dev fallback.
+   * (`mllm_<agentId>_…`), so those win. MARITIME_TOKEN is a local-dev fallback only.
    *
    * That proxy is an OpenAI passthrough: gemma-4-12b / glm-5.2 / deepseek-v4 all 404.
    * Verified 2026-07-26 from inside a container — gpt-4o-mini, gpt-4.1-mini, gpt-5-mini
@@ -56,7 +57,8 @@ export const config = {
       cli: process.env.MARITIME_CLI ?? 'maritime',
     },
     ghl: {
-      pit: str(process.env.GHL_PIT),
+      /** Prefer GHL_PIT; GHL_PRIVATE_TOKEN is accepted as an alias from older env files. */
+      pit: str(process.env.GHL_PIT) || str(process.env.GHL_PRIVATE_TOKEN),
       apiBase: str(process.env.GHL_API_BASE, 'https://services.leadconnectorhq.com'),
       locationId: str(process.env.GHL_LOCATION_ID),
       /**
@@ -83,6 +85,28 @@ export const config = {
 
   /** Test/demo speedup: collapses all waits so a full run finishes in seconds. */
   fastClock: bool(process.env.FAST_CLOCK, false),
+
+  // ---- front-door agent --------------------------------------------------
+  /**
+   * Browser-driven first contact. Prefers submitting the firm's intake form with
+   * our inbound number; falls back to discovering a phone to text. Live form
+   * submission intentionally bypasses ALLOW_LIVE_SENDS / allowlist.
+   */
+  frontdoor: {
+    inboundNumber:
+      str(process.env.FRONTDOOR_INBOUND_NUMBER) ||
+      str(process.env.GHL_FROM_NUMBER, '+17407614801'),
+    model: str(process.env.FRONTDOOR_MODEL, 'gpt-4o-mini'),
+    maxSteps: int(process.env.FRONTDOOR_MAX_STEPS, 25),
+    timeoutMs: int(process.env.FRONTDOOR_TIMEOUT_MS, 180_000),
+    mcpCommand: str(process.env.PLAYWRIGHT_MCP_CMD, 'npx'),
+    mcpArgs: (
+      process.env.PLAYWRIGHT_MCP_ARGS ?? '@playwright/mcp@latest --headless --isolated'
+    )
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean),
+  },
 } as const;
 
 /** Targets that may receive real traffic. Absent file = nobody. */

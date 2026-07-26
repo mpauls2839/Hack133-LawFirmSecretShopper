@@ -16,6 +16,7 @@ import { businessMinutesBetween, rawMinutesBetween } from '../domain/hours.ts';
 import { assessReachability } from '../ingest/capability.ts';
 import { qualify } from '../domain/qualify.ts';
 import { recordSendFailure } from '../ingest/capability.ts';
+import { enqueueAwaitInbound } from '../frontdoor/await-inbound.ts';
 import type { ChannelAdapter, InboundEvent } from '../channels/types.ts';
 import type { Flags, Run, Target } from '../domain/types.ts';
 
@@ -61,7 +62,22 @@ export type OpenRunResult =
   | { ok: false; run: Run; reason: string };
 
 /** Creates a run, derives qualification, picks a channel, and queues first contact. */
-export async function openRun(targetId: string, opts: { cycle?: string; agentName?: string } = {}): Promise<OpenRunResult> {
+export async function openRun(
+  targetId: string,
+  opts: {
+    cycle?: string;
+    agentName?: string;
+    /** Skip reachability pick and force this channel + address (Path A override). */
+    channel?: 'sms' | 'email' | 'form';
+    address?: string;
+    /**
+     * Path B: create the run and wait for the firm to text our inbound number.
+     * Does not queue first_contact.
+     */
+    awaitInbound?: boolean;
+    inboundNumber?: string;
+  } = {},
+): Promise<OpenRunResult> {
   const target = targets.get(targetId);
   if (!target) throw new Error(`target ${targetId} not found`);
   const persona = personas.fixed();
@@ -83,14 +99,44 @@ export async function openRun(targetId: string, opts: { cycle?: string; agentNam
     agent_name: opts.agentName ?? null,
   });
 
-  const reachability = assessReachability(target);
-  if (!reachability.reachable || !reachability.choice) {
-    run = runs.transition(run.id, 'TERMINAL', {
-      terminal_state: 'UNREACHABLE',
-      terminal_reason: reachability.unreachable_reason ?? 'no usable asynchronous channel',
-      cleanup_state: 'not_needed',
+  // Path B: form was already submitted; we wait for the firm to text us.
+  if (opts.awaitInbound) {
+    const inbound = opts.inboundNumber ?? config.frontdoor.inboundNumber;
+    const ts = nowIso();
+    run = runs.patch(run.id, {
+      channel: 'sms',
+      channel_address: inbound,
+      agent_name: opts.agentName ?? 'frontdoor-await-inbound',
+      // Form submit is the first contact for latency grading.
+      t0: ts,
+      last_outbound_at: ts,
     });
-    return { ok: false, run, reason: run.terminal_reason ?? 'unreachable' };
+    run = runs.transition(run.id, 'CONTACTED');
+    run = runs.transition(run.id, 'AWAITING_REPLY');
+    enqueueAwaitInbound({
+      run_id: run.id,
+      target_id: target.id,
+      inbound_number: inbound,
+    });
+    logEvent(run.id, 'await_inbound_opened', { inbound_number: inbound });
+    return { ok: true, run, first_contact: '' };
+  }
+
+  let choice: { channel: 'sms' | 'email' | 'form'; address: string; why: string } | null = null;
+
+  if (opts.channel && opts.address) {
+    choice = { channel: opts.channel, address: opts.address, why: 'front-door override' };
+  } else {
+    const reachability = assessReachability(target);
+    if (!reachability.reachable || !reachability.choice) {
+      run = runs.transition(run.id, 'TERMINAL', {
+        terminal_state: 'UNREACHABLE',
+        terminal_reason: reachability.unreachable_reason ?? 'no usable asynchronous channel',
+        cleanup_state: 'not_needed',
+      });
+      return { ok: false, run, reason: run.terminal_reason ?? 'unreachable' };
+    }
+    choice = reachability.choice;
   }
 
   const gate = checkSendGate(target);
@@ -99,10 +145,10 @@ export async function openRun(targetId: string, opts: { cycle?: string; agentNam
     return { ok: false, run, reason: `send blocked: ${gate.reason}` };
   }
 
-  const body = firstContactMessage(persona, target, reachability.choice.channel);
+  const body = firstContactMessage(persona, target, choice.channel);
   run = runs.patch(run.id, {
-    channel: reachability.choice.channel,
-    channel_address: reachability.choice.address,
+    channel: choice.channel,
+    channel_address: choice.address,
   });
   sendQueue.enqueue({ run_id: run.id, kind: 'first_contact', body, delayMs: 0 });
   return { ok: true, run, first_contact: body };

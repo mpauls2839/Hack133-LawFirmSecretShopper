@@ -24,6 +24,8 @@ export type InboundEvent = {
   ts: string;
   /** Set when the transport already knows the run (per-agent identity, or a mock). */
   run_id?: string;
+  /** GHL conversation id when known (discovery / webhook). Used to bind after claim. */
+  conversation_id?: string;
 };
 
 export type InboundSink = (event: InboundEvent) => Promise<void>;
