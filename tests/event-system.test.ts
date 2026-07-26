@@ -92,6 +92,102 @@ describe("GoHighLevel inbound parsing", () => {
       }),
     ).toBeNull();
   });
+
+  it("parses Workflow customData / contact.phone payloads", () => {
+    const parsed = parseGhlInboundMessage({
+      type: "InboundMessage",
+      locationId: "loc_wf",
+      contact: { id: "contact_wf", phone: "+18476917564" },
+      customData: {
+        messageId: "msg_wf_1",
+        to: "+17407614801",
+        body: "Yes we handle personal injury",
+        messageType: "SMS",
+      },
+    });
+
+    expect(parsed).toEqual({
+      messageId: "msg_wf_1",
+      from: "+18476917564",
+      to: "+17407614801",
+      text: "Yes we handle personal injury",
+      messageType: "SMS",
+      locationId: "loc_wf",
+      contactId: "contact_wf",
+    });
+  });
+
+  it("parses nested data payloads", () => {
+    const parsed = parseGhlInboundMessage({
+      type: "InboundMessage",
+      data: {
+        locationId: "loc_nested",
+        messageId: "msg_nested",
+        contactId: "contact_nested",
+        messageType: "SMS",
+        from: "+18476917564",
+        to: "+17407614801",
+        body: "Nested reply",
+      },
+    });
+
+    expect(parsed).toEqual({
+      messageId: "msg_nested",
+      from: "+18476917564",
+      to: "+17407614801",
+      text: "Nested reply",
+      messageType: "SMS",
+      locationId: "loc_nested",
+      contactId: "contact_nested",
+    });
+  });
+
+  it("parses Workflow Customer Replied contact envelopes", () => {
+    const parsed = parseGhlInboundMessage(
+      {
+        contact_id: "c_wf_1",
+        first_name: "Alex",
+        phone: "+18476917564",
+        location: { id: "jC52WuYhSqW0DhSRzG3j", name: "Demo" },
+        message: {
+          id: "msg_reply_1",
+          body: "Yes we handle personal injury",
+          type: "SMS",
+        },
+        workflow: { id: "wf_1", name: "Secret Shopper Inbound SMS" },
+        triggerData: {},
+        customData: {},
+      },
+      { defaultTo: "+17407614801" },
+    );
+
+    expect(parsed).toEqual({
+      messageId: "msg_reply_1",
+      from: "+18476917564",
+      to: "+17407614801",
+      text: "Yes we handle personal injury",
+      messageType: "SMS",
+      locationId: "jC52WuYhSqW0DhSRzG3j",
+      contactId: "c_wf_1",
+    });
+  });
+
+  it("synthesizes a stable messageId when Workflow omits message.id", () => {
+    const payload = {
+      contact_id: "c_wf_2",
+      phone: "+18476917564",
+      message: { body: "Can you call me?" },
+      workflow: { id: "wf_1" },
+      customData: {},
+    };
+    const first = parseGhlInboundMessage(payload, { defaultTo: "+17407614801" });
+    const second = parseGhlInboundMessage(payload, { defaultTo: "+17407614801" });
+    expect(first?.from).toBe("+18476917564");
+    expect(first?.to).toBe("+17407614801");
+    expect(first?.text).toBe("Can you call me?");
+    expect(first?.messageId).toMatch(/^wf:c_wf_2:/);
+    expect(second?.messageId).toBe(first?.messageId);
+  });
 });
 
 describe("lifecycle helpers", () => {

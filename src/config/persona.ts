@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+export const intakeAnalystSchema = z.object({
+  role: z.string().min(1),
+  instructions: z.string().min(1),
+  output_schema: z.record(z.unknown()),
+  error_shape: z.record(z.unknown()).optional(),
+  rules: z.array(z.string()).default([]),
+  channel_preference_order: z.array(z.string()).default([]),
+  channel_types: z.array(z.string()).default([]),
+});
+
 export const personaConfigSchema = z.object({
   campaignId: z.string().min(1),
   firmName: z.string().min(1),
@@ -14,6 +24,9 @@ export const personaConfigSchema = z.object({
     tone: z.string().default("polite and concise"),
   }),
   replyDelaySeconds: z.number().int().nonnegative().optional(),
+  /** Optional website-intake prompt used upstream of the SMS secret shopper. */
+  intakeAnalyst: intakeAnalystSchema.optional(),
 });
 
 export type PersonaConfig = z.infer<typeof personaConfigSchema>;
+export type IntakeAnalystConfig = z.infer<typeof intakeAnalystSchema>;

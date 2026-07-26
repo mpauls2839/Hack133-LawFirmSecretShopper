@@ -219,10 +219,14 @@ export function verifyLegacyRsa(rawBody: string, signature: string, publicKeyPem
 }
 
 /**
- * Normalize GoHighLevel InboundMessage payloads.
- * Marketplace webhooks are often flat; workflow webhooks may nest under `data`.
+ * Normalize GoHighLevel inbound SMS payloads.
+ * Accepts marketplace InboundMessage shapes and Workflow Customer Replied
+ * envelopes (contact dump with nested `message` / `customData` / `phone`).
  */
-export function parseGhlInboundMessage(body: unknown): {
+export function parseGhlInboundMessage(
+  body: unknown,
+  options?: { defaultTo?: string },
+): {
   messageId: string;
   from: string;
   to: string;
@@ -240,50 +244,167 @@ export function parseGhlInboundMessage(body: unknown): {
     root.data && typeof root.data === "object"
       ? (root.data as Record<string, unknown>)
       : null;
-  const payload = nested ?? root;
+  const customData =
+    root.customData && typeof root.customData === "object"
+      ? (root.customData as Record<string, unknown>)
+      : nested?.customData && typeof nested.customData === "object"
+        ? (nested.customData as Record<string, unknown>)
+        : null;
+  const contact =
+    root.contact && typeof root.contact === "object"
+      ? (root.contact as Record<string, unknown>)
+      : nested?.contact && typeof nested.contact === "object"
+        ? (nested.contact as Record<string, unknown>)
+        : null;
+  const messageObj = asRecord(
+    firstDefined(
+      [customData, nested, root].filter((layer): layer is Record<string, unknown> => layer !== null),
+      ["message"],
+    ),
+  );
 
-  const type = String(root.type ?? payload.type ?? "");
-  if (type && type !== "InboundMessage") {
+  // Prefer the most specific layer first (customData → message → data → root).
+  const layers = [customData, messageObj, nested, root].filter(
+    (layer): layer is Record<string, unknown> => layer !== null,
+  );
+
+  const type = String(
+    firstString(root, "type") ??
+      firstString(nested, "type") ??
+      firstString(customData, "type") ??
+      "",
+  );
+  // Workflow contact webhooks often omit type; only reject explicit non-inbound types.
+  if (type && type !== "InboundMessage" && !isWorkflowContactEnvelope(root)) {
     return null;
   }
 
   const messageType = String(
-    payload.messageType ?? payload.messageTypeString ?? root.messageType ?? "SMS",
+    asNonEmptyString(firstDefined(layers, ["messageType", "messageTypeString", "type"])) ??
+      "SMS",
   );
-  const messageTypeId = Number(payload.messageTypeId ?? root.messageTypeId);
+  const messageTypeId = Number(firstDefined(layers, ["messageTypeId"]));
+  const explicitChannel = layers.some(
+    (layer) =>
+      layer.messageType !== undefined ||
+      layer.messageTypeString !== undefined ||
+      layer.messageTypeId !== undefined,
+  );
   const looksLikeSms =
+    !explicitChannel ||
     messageType.toUpperCase().includes("SMS") ||
     messageType === "TYPE_SMS" ||
-    messageTypeId === 2 ||
-    (!payload.messageType && !payload.messageTypeString && !payload.messageTypeId);
+    messageTypeId === 2;
 
   if (!looksLikeSms) {
     return null;
   }
 
-  const messageId = String(
-    payload.messageId ?? payload.id ?? root.messageId ?? root.webhookId ?? "",
-  );
-  const from = String(payload.from ?? payload.phone ?? "");
-  const to = String(payload.to ?? "");
-  const text = String(payload.body ?? payload.message ?? payload.text ?? "");
+  const contactId =
+    asNonEmptyString(firstDefined(layers, ["contactId", "contact_id"])) ??
+    asNonEmptyString(contact?.id) ??
+    asNonEmptyString(root.contact_id);
+
+  const from =
+    asNonEmptyString(firstDefined(layers, ["from", "phone"])) ??
+    asNonEmptyString(contact?.phone) ??
+    asNonEmptyString(messageObj?.from) ??
+    asNonEmptyString(messageObj?.phone) ??
+    "";
+
+  const to =
+    asNonEmptyString(firstDefined(layers, ["to", "toNumber", "to_number"])) ??
+    asNonEmptyString(messageObj?.to) ??
+    asNonEmptyString(options?.defaultTo) ??
+    "";
+
+  const text =
+    asNonEmptyString(firstDefined(layers, ["body", "text", "messageBody"])) ??
+    asNonEmptyString(messageObj?.body) ??
+    asNonEmptyString(messageObj?.message) ??
+    asNonEmptyString(messageObj?.text) ??
+    // Only treat root `message` as text when it is a string (Workflow uses an object).
+    asNonEmptyString(typeof root.message === "string" ? root.message : undefined) ??
+    "";
+
+  const messageId =
+    asNonEmptyString(firstDefined(layers, ["messageId", "message_id"])) ??
+    asNonEmptyString(messageObj?.id) ??
+    asNonEmptyString(messageObj?.messageId) ??
+    asNonEmptyString(root.webhookId) ??
+    // Stable fallback so Workflow retries stay idempotent.
+    (from || contactId
+      ? `wf:${contactId ?? from}:${stableIdSuffix(text || from)}`
+      : "");
 
   if (!messageId || !from || !to) {
     return null;
   }
+
+  const location =
+    asRecord(root.location) ?? asRecord(nested?.location) ?? asRecord(customData?.location);
+  const locationId =
+    asNonEmptyString(firstDefined(layers, ["locationId", "location_id"])) ??
+    asNonEmptyString(location?.id) ??
+    asNonEmptyString(root.locationId);
 
   return {
     messageId,
     from,
     to,
     text,
-    messageType,
-    locationId:
-      typeof payload.locationId === "string"
-        ? payload.locationId
-        : typeof root.locationId === "string"
-          ? root.locationId
-          : undefined,
-    contactId: typeof payload.contactId === "string" ? payload.contactId : undefined,
+    messageType: messageType.includes("SMS") || messageType === "TYPE_SMS" ? messageType : "SMS",
+    locationId,
+    contactId: contactId ?? undefined,
   };
+}
+
+function isWorkflowContactEnvelope(root: Record<string, unknown>): boolean {
+  return (
+    (typeof root.phone === "string" || typeof root.contact_id === "string") &&
+    (root.message !== undefined || root.customData !== undefined || root.workflow !== undefined)
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function stableIdSuffix(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex").slice(0, 16);
+}
+
+function firstString(
+  obj: Record<string, unknown> | null | undefined,
+  key: string,
+): string | undefined {
+  if (!obj) {
+    return undefined;
+  }
+  return asNonEmptyString(obj[key]);
+}
+
+function firstDefined(
+  layers: Record<string, unknown>[],
+  keys: string[],
+): unknown {
+  for (const layer of layers) {
+    for (const key of keys) {
+      const value = layer[key];
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+  return undefined;
 }
