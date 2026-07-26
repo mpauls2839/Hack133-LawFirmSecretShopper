@@ -1,0 +1,18 @@
+{
+  "campaignId": "demo-personal-injury-001",
+  "firmName": "Example Law Firm",
+  "firmPhone": "+15559876543",
+  "initialMessage": "Hi, I was in a car accident last week and I'm looking for help understanding my options. Do you handle personal injury cases?",
+  "persona": {
+    "name": "Alex Rivera",
+    "summary": "Busy professional seeking a consultation after a recent car accident.",
+    "problem": "Rear-ended at a stoplight; minor injuries and vehicle damage; unsure about insurance and next steps.",
+    "goals": [
+      "Confirm the firm handles personal injury",
+      "Ask about consultation process",
+      "Obtain a booking or scheduling link"
+    ],
+    "tone": "polite, concise, slightly anxious but cooperative"
+  },
+  "replyDelaySeconds": 45
+}
