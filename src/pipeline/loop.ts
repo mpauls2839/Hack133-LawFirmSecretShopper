@@ -235,7 +235,7 @@ export async function handleInbound(event: InboundEvent): Promise<InboundOutcome
 
     let updated = runs.patch(run.id, patch);
     const view = buildView(updated);
-    const decision = decide(view, cls);
+    const decision = decide(view, cls, event.body);
 
     logEvent(run.id, 'inbound_processed', {
       provider_id: event.provider_id,
@@ -457,9 +457,12 @@ export async function sweep(): Promise<SweepReport> {
 async function drainOne(queueId: string): Promise<boolean> {
   const queued = sendQueue.get(queueId);
   if (!queued || queued.state !== 'pending') return false;
+  // Take the row before doing anything else. Two overlapping sweeps double-sent without this.
+  if (!sendQueue.claim(queueId)) return false;
   const run = runs.get(queued.run_id);
   if (!run) return false;
   if (isClosed(run.state) && queued.kind !== 'closing') {
+    sendQueue.release(queueId);
     sendQueue.cancelPending(run.id, 'run closed before send');
     return false;
   }

@@ -40,6 +40,8 @@ const GOAL_INSTRUCTION: Record<Goal, string> = {
   confirm_booking:
     'They offered a time or a booking link. Accept the earliest option and confirm plainly. Do not agree to fees or sign anything.',
   ask_cost: 'Ask concretely what talking to them would cost you.',
+  answer_question:
+    'They asked you something. Answer it directly and specifically from your case facts, in one or two sentences. Do not ask anything back unless it follows naturally.',
   acknowledge_wait:
     'They asked you to hold. Say briefly that you will wait and nothing more. Do not ask a new question.',
   wrap_up: 'Acknowledge their answer briefly and close the conversation politely.',
@@ -58,6 +60,7 @@ const TEMPLATES: Record<Goal, (p: Persona) => string> = {
     `That works for me — please put me down for the earliest time you have. I'll keep it short.`,
   ask_cost: () =>
     `Before I go further: what would talking to you actually cost me? I don't have anything to put down up front.`,
+  answer_question: (p) => `${firstLine(p.need)}`,
   acknowledge_wait: () => `No problem, I'll wait. Thanks.`,
   wrap_up: () => `Understood, thanks for the clear answer. I appreciate you taking the time.`,
 };
@@ -105,6 +108,7 @@ export async function composeReply(input: ComposeInput): Promise<{ body: string;
     `Name: ${persona.name}. Contact: ${persona.contact.email} / ${persona.contact.phone}.`,
     `Need: ${persona.need}`,
     `Background you may draw on: ${persona.backstory}`,
+    persona.case_facts ? `Case facts — answer questions directly from these and never invent beyond them:\n${persona.case_facts}` : '',
     `Urgency: ${persona.urgency}. Budget: ${persona.budget}.`,
     persona.behavior_rules.never.length
       ? `Hard rules, never break them: ${persona.behavior_rules.never.join(' ')}`

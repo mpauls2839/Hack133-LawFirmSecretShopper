@@ -267,12 +267,17 @@ describe('outbound queue', () => {
     });
     const queued = sendQueue.enqueue({ run_id: run.id, kind: 'first_contact', body: 'hi', delayMs: 0 });
 
+    // A real send claims the row first; attempts is counted at claim time.
+    assert.equal(sendQueue.claim(queued.id), true);
+    assert.equal(sendQueue.claim(queued.id), false, 'a second worker must not get the same row');
+
     sendQueue.markFailed(queued.id, 'HTTP 502', true);
     let row = sendQueue.get(queued.id)!;
-    assert.equal(row.state, 'pending', 'retryable failures stay pending');
+    assert.equal(row.state, 'pending', 'retryable failures go back to pending');
     assert.equal(row.attempts, 1);
     assert.equal(sendQueue.due().length, 0, 'and are backed off, not hammered');
 
+    sendQueue.claim(queued.id);
     sendQueue.markFailed(queued.id, 'Error 21614: not a valid mobile number', false);
     row = sendQueue.get(queued.id)!;
     assert.equal(row.state, 'failed');

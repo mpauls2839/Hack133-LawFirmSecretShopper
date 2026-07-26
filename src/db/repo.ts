@@ -181,6 +181,7 @@ function hydratePersona(row: any): Persona {
     backstory: row.backstory,
     need: row.need,
     need_tags: p<string[]>(row.need_tags_json, []),
+    case_facts: row.case_facts ?? '',
     urgency: row.urgency,
     budget: row.budget,
     behavior_rules: p(row.behavior_rules_json, {
@@ -196,10 +197,11 @@ export const personas = {
   upsert(persona: Persona): Persona {
     db()
       .prepare(
-        `INSERT INTO personas (id, name, contact_json, backstory, need, need_tags_json, urgency, budget, behavior_rules_json, active, created_at)
-         VALUES (@id, @name, @contact_json, @backstory, @need, @need_tags_json, @urgency, @budget, @behavior_rules_json, 1, @created_at)
+        `INSERT INTO personas (id, name, contact_json, backstory, case_facts, need, need_tags_json, urgency, budget, behavior_rules_json, active, created_at)
+         VALUES (@id, @name, @contact_json, @backstory, @case_facts, @need, @need_tags_json, @urgency, @budget, @behavior_rules_json, 1, @created_at)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, contact_json = excluded.contact_json, backstory = excluded.backstory,
+           case_facts = excluded.case_facts,
            need = excluded.need, need_tags_json = excluded.need_tags_json, urgency = excluded.urgency,
            budget = excluded.budget, behavior_rules_json = excluded.behavior_rules_json`,
       )
@@ -208,6 +210,7 @@ export const personas = {
         name: persona.name,
         contact_json: j(persona.contact),
         backstory: persona.backstory,
+        case_facts: persona.case_facts ?? '',
         need: persona.need,
         need_tags_json: j(persona.need_tags),
         urgency: persona.urgency,
@@ -599,6 +602,26 @@ export const sendQueue = {
       .all(nowIso(), limit) as QueuedSend[];
   },
 
+  /**
+   * Atomically takes ownership of a queued send. Returns false if someone else already
+   * has it.
+   *
+   * Two sweeps overlapping — the interval timer and a manually triggered one — both read
+   * the same pending row and both sent it, so the business received the identical message
+   * twice. Reading then sending is not safe; the claim has to be a conditional UPDATE.
+   */
+  claim(queueId: string): boolean {
+    const res = db()
+      .prepare("UPDATE send_queue SET state = 'sending', attempts = attempts + 1 WHERE id = ? AND state = 'pending'")
+      .run(queueId);
+    return res.changes === 1;
+  },
+
+  /** Hands an unsent claim back, so a crash mid-send does not strand the message. */
+  release(queueId: string): void {
+    db().prepare("UPDATE send_queue SET state = 'pending' WHERE id = ? AND state = 'sending'").run(queueId);
+  },
+
   pendingForRun(runId: string): QueuedSend[] {
     return db()
       .prepare("SELECT * FROM send_queue WHERE run_id = ? AND state = 'pending'")
@@ -607,7 +630,7 @@ export const sendQueue = {
 
   markSent(qid: string, providerId: string | null): void {
     db()
-      .prepare("UPDATE send_queue SET state = 'sent', sent_at = ?, provider_id = ?, attempts = attempts + 1 WHERE id = ?")
+      .prepare("UPDATE send_queue SET state = 'sent', sent_at = ?, provider_id = ? WHERE id = ?")
       .run(nowIso(), providerId, qid);
   },
 
@@ -615,11 +638,11 @@ export const sendQueue = {
     const next = new Date(Date.now() + 5 * 60_000).toISOString();
     if (retry) {
       db()
-        .prepare("UPDATE send_queue SET attempts = attempts + 1, last_error = ?, send_after = ? WHERE id = ?")
+        .prepare("UPDATE send_queue SET state = 'pending', last_error = ?, send_after = ? WHERE id = ?")
         .run(error, next, qid);
     } else {
       db()
-        .prepare("UPDATE send_queue SET state = 'failed', attempts = attempts + 1, last_error = ? WHERE id = ?")
+        .prepare("UPDATE send_queue SET state = 'failed', last_error = ? WHERE id = ?")
         .run(error, qid);
     }
   },

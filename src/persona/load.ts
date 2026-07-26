@@ -67,6 +67,7 @@ export function loadPersona(path = DEFAULT_PATH): Persona {
       preferred_channel: (meta.preferred_channel || 'sms') as ChannelName,
     },
     backstory: section(body, 'Backstory'),
+    case_facts: section(body, 'Case facts'),
     need: section(body, 'Need'),
     need_tags: list(meta.need_tags),
     urgency: meta.urgency || 'normal',

@@ -56,6 +56,8 @@ export type Persona = {
   backstory: string;
   need: string;
   need_tags: string[];
+  /** Verbatim facts the persona may answer questions from. Never invent beyond these. */
+  case_facts: string;
   urgency: string;
   budget: string;
   behavior_rules: {

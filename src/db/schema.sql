@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS personas (
   name                TEXT NOT NULL,
   contact_json        TEXT NOT NULL,                 -- { email, phone, preferred_channel }
   backstory           TEXT NOT NULL,
+  case_facts          TEXT NOT NULL DEFAULT '',
   need                TEXT NOT NULL,
   need_tags_json      TEXT NOT NULL DEFAULT '[]',    -- drives qualification (spec 4.3)
   urgency             TEXT NOT NULL,

@@ -28,6 +28,7 @@ export type Goal =
   | 'seek_booking'
   | 'confirm_booking'
   | 'ask_cost'
+  | 'answer_question'
   | 'acknowledge_wait'
   | 'wrap_up';
 
@@ -41,7 +42,7 @@ export type Decision = {
 /** Turns spent chasing a human after one appeared before we accept HUMAN_* and stop. */
 const HUMAN_PURSUIT_TURNS = 2;
 
-export function decide(view: RunView, cls: Classification): Decision {
+export function decide(view: RunView, cls: Classification, lastInbound: string | null = null): Decision {
   const f = cls.flags;
 
   if (f.opt_out_requested) {
@@ -121,21 +122,45 @@ export function decide(view: RunView, cls: Classification): Decision {
     };
   }
 
-  return { action: 'reply', reason: 'conversation still progressing', goal: nextGoal(view, cls, humanSeen) };
+  return {
+    action: 'reply',
+    reason: 'conversation still progressing',
+    goal: nextGoal(view, cls, humanSeen, lastInbound),
+  };
 }
 
 function bestHumanOutcome(specialist: boolean): string {
   return specialist ? 'HUMAN_SPECIALIST' : 'HUMAN_GENERIC';
 }
 
-function nextGoal(view: RunView, cls: Classification, humanSeen: boolean): Goal {
+/**
+ * Did they ask us something? A question mark is the cheap signal, but intake staff
+ * routinely ask without one ("tell me what happened", "let me know the date").
+ */
+function askedUsSomething(body: string | null): boolean {
+  if (!body) return false;
+  if (body.includes('?')) return true;
+  return /\b(?:tell me|let me know|can you (?:confirm|send|share|provide)|what (?:is|was|are)|when (?:did|was)|where (?:did|was)|how (?:did|bad|many|long)|who (?:was|is)|please (?:confirm|send|share|provide|describe)|need (?:to know|your)|send me)\b/i.test(
+    body,
+  );
+}
+
+function nextGoal(view: RunView, cls: Classification, humanSeen: boolean, lastInbound: string | null): Goal {
   const f = cls.flags;
   if (f.booking_link || f.meeting_offered) return 'confirm_booking';
-  if (cls.sender_type === 'autoresponder') {
-    // Two machine acknowledgements is enough patience before asking for a person.
-    return view.machineInbound >= 2 ? 'escalate_to_human' : 'answer_and_seek_human';
-  }
-  if (cls.sender_type === 'ai_agent') {
+
+  /**
+   * If they asked a question, answer it. This outranks every other objective.
+   *
+   * Ignoring a direct question to pursue our own agenda is both rude and useless as
+   * measurement: a business that asks "when did this happen" and gets an unrelated
+   * question back is being tested on our behaviour, not theirs. It also reads instantly
+   * as a bot, which changes how they treat the rest of the conversation.
+   */
+  if (askedUsSomething(lastInbound)) return 'answer_question';
+
+  if (cls.sender_type === 'autoresponder' || cls.sender_type === 'ai_agent') {
+    // Two machine replies is enough patience before asking for a person.
     return view.machineInbound >= 2 ? 'escalate_to_human' : 'answer_and_seek_human';
   }
   if (humanSeen && !view.specialistSeen && !f.specialist_identified) return 'seek_specialist';
